@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { YyDoc, insertIndexFor, isSorted, raw, sortKey } from '../src/yy/index.js';
+import { comparePaths, YyDoc, insertIndexFor, isSorted, raw, sortKey } from '../src/yy/index.js';
 
 const OBJECT_YY = [
   '{',
@@ -87,8 +87,7 @@ describe('YyDoc writing', () => {
   it('appends to an expanded array with matching indentation', () => {
     const doc = YyDoc.parse(OBJECT_YY);
     doc.push(['eventList'], { $GMEvent: 'v1', eventNum: 0, eventType: 3 });
-    const lines = doc.text.split('\n');
-    const added = lines.find((l) => l.includes('"eventType":3'))!;
+    const added = doc.text.split('\n').find((line) => line.includes('"eventType":3'))!;
     expect(added.startsWith('    {')).toBe(true);
     expect(added.endsWith(',')).toBe(true);
     expect(doc.length(['eventList'])).toBe(2);
@@ -127,5 +126,49 @@ describe('YyDoc writing', () => {
     expect(doc.get(['solid'])).toBe(true);
     expect(doc.has(['physicsDensity'])).toBe(false);
     expect(doc.get(['%Name'])).toBe('objCar');
+  });
+});
+
+describe('array insertion', () => {
+  it('inserts at a position', () => {
+    const doc = YyDoc.parse('{\n  "xs":[\n    {"n":"a",},\n    {"n":"c",},\n  ],\n}');
+    doc.insertAt(['xs'], 1, { n: 'b' });
+    expect(doc.text).toBe(
+      '{\n  "xs":[\n    {"n":"a",},\n    {"n":"b",},\n    {"n":"c",},\n  ],\n}',
+    );
+  });
+
+  it('clamps an out-of-range index', () => {
+    const doc = YyDoc.parse('{\n  "xs":[\n    {"n":"a",},\n  ],\n}');
+    doc.insertAt(['xs'], -5, { n: 'first' });
+    doc.insertAt(['xs'], 99, { n: 'last' });
+    expect(doc.get(['xs', 0, 'n'])).toBe('first');
+    expect(doc.get(['xs', 1, 'n'])).toBe('a');
+    expect(doc.get(['xs', 2, 'n'])).toBe('last');
+  });
+
+  it('keeps .yyp resources sorted by path', () => {
+    const doc = YyDoc.parse(
+      '{\n  "resources":[\n' +
+        '    {"id":{"name":"objA","path":"objects/objA/objA.yy",},},\n' +
+        '    {"id":{"name":"objZ","path":"objects/objZ/objZ.yy",},},\n' +
+        '  ],\n}',
+    );
+    const target = 'objects/objM/objM.yy';
+    const paths = (doc.get(['resources']) as { id: { path: string } }[]).map((r) => r.id.path);
+    let index = paths.findIndex((p) => comparePaths(p, target) > 0);
+    if (index === -1) index = paths.length;
+    doc.insertAt(['resources'], index, { id: { name: 'objM', path: target } });
+
+    const after = (doc.get(['resources']) as { id: { path: string } }[]).map((r) => r.id.path);
+    expect(after).toEqual([...after].sort(comparePaths));
+    expect(after[1]).toBe(target);
+  });
+
+  it('supplies the comma when appending after a comma-less final entry', () => {
+    const doc = YyDoc.parse('{\n  "xs": [\n    {"n": "a"}\n  ]\n}');
+    doc.push(['xs'], { n: 'b' });
+    expect(doc.length(['xs'])).toBe(2);
+    expect(YyDoc.parse(doc.text).get(['xs', 1, 'n'])).toBe('b');
   });
 });

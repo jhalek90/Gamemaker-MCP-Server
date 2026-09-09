@@ -191,19 +191,33 @@ export class YyDoc {
 
   /** Append a value to the array at `arrayPath`. */
   push(arrayPath: YyPath, value: YyValue | Raw): this {
+    return this.insertAt(arrayPath, Number.MAX_SAFE_INTEGER, value);
+  }
+
+  /**
+   * Insert a value into the array at `arrayPath`, before position `index`.
+   * `index` is clamped to the array's bounds.
+   *
+   * GameMaker keeps some `.yyp` arrays ordered — `resources`, `Folders` and
+   * `IncludedFiles` sort case-insensitively by path — and reorders them on
+   * save. Inserting in the right place keeps that save from showing up as a
+   * diff.
+   */
+  insertAt(arrayPath: YyPath, index: number, value: YyValue | Raw): this {
     const node = this.nodeAt(arrayPath);
     if (node.kind !== 'array') throw new YyPathError(arrayPath, 'Not an array');
     const elements = node.elements;
-    const last = elements[elements.length - 1];
-    const at = last ? last.end : node.contentStart;
+    const position = Math.max(0, Math.min(index, elements.length));
+    const prev = position > 0 ? elements[position - 1] : undefined;
+    const at = prev ? prev.end : node.contentStart;
     const indent = this.memberIndent(node);
     const separator = node.inline ? '' : this.eol + indent;
     const text = emit(value as YyValue, { eol: this.eol, indent });
     return this.splice(at, at, [
-      last && !last.hasComma ? ',' : '',
+      prev && !prev.hasComma ? ',' : '',
       separator,
       text,
-      trailingComma(elements, elements.length),
+      trailingComma(elements, position),
     ].join(''));
   }
 

@@ -4,7 +4,8 @@ An MCP server for GameMaker — giving AI agents a real connection to the engine
 faithful project editing, a compile loop, and live introspection of a running
 game.
 
-Status: **M0 in progress.** The `.yy` document model is built and validated.
+Status: **M0 and M1a complete.** The `.yy` document model and the
+transactional write layer are built and validated.
 
 ## Why this exists
 
@@ -39,12 +40,52 @@ IDE builds.
 
 | | |
 |---|---|
-| **M0** | `.yy` document model + corpus harness |
-| M1 | `.yyp` graph, transactional resource CRUD, shadow-git undo, GML symbol index |
+| **M0** | `.yy` document model + corpus harness — done |
+| **M1a** | Transactional writes, shadow-git undo — done |
+| M1b | `.yyp` graph, resource CRUD, GML symbol index |
 | M2 | `GmlSpec.xml` knowledge base, MCP server, first toolset |
 | M3 | Igor discovery + probe layer, `compile_check`, isolated build cache |
 | M4 | Injectable GML bridge: TCP, screenshots, state introspection |
 | M5 | Live tunables, seeded input, GML test runner |
+
+## Transactions and undo
+
+Every write goes through a transaction. It collects the whole change set,
+validates it, snapshots the current state, then flushes in one burst:
+
+```ts
+const workspace = Workspace.open(projectRoot);
+const tx = workspace.begin('add obj_bridge');
+
+const car = tx.readDoc('objects/objCar/objCar.yy')!;  // reads through pending writes
+car.set(['persistent'], true);
+tx.writeDoc('objects/objCar/objCar.yy', car);
+tx.write('objects/obj_bridge/Create_0.gml', 'server = network_create_server_raw(...);');
+
+tx.commit();     // validate -> snapshot -> apply, or roll back
+workspace.undo(); // step back, repeatable
+```
+
+**Batching is correctness, not tidiness.** Creating one object touches the
+`.yy`, the `.yyp` resource list, `.resource_order` and each event `.gml`.
+Written one at a time with the IDE open, GameMaker prompts to reload after each
+and can reload a half-created resource.
+
+**Validation runs before anything lands.** A `.yy` that does not re-parse is
+rejected with the whole change set, because a corrupt `.yy` stops GameMaker
+loading the project at all.
+
+**Undo uses a shadow git repo** at `.gml-mcp/shadow.git`, with the project as
+its work tree. Deliberately not the user's own repository — running
+`git commit` inside someone's working tree while they have their own staged
+changes is a bad surprise, and stash collisions are worse. A separate GIT_DIR
+costs nothing, gives unlimited undo depth, and behaves identically whether or
+not the project is versioned. `core.autocrlf` is forced off: 39% of corpus
+files are CRLF and git would otherwise rewrite them on restore.
+
+Each transaction commits the state *before* it applies, so undo restores
+modified files, deletes files the transaction created, and brings back files it
+deleted.
 
 ## The `.yy` format, as measured
 
