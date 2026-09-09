@@ -4,8 +4,8 @@ An MCP server for GameMaker — giving AI agents a real connection to the engine
 faithful project editing, a compile loop, and live introspection of a running
 game.
 
-Status: **M0 and M1a complete.** The `.yy` document model and the
-transactional write layer are built and validated.
+Status: **M1 complete.** The `.yy` document model, transactional writes, and
+resource CRUD are built and validated against real projects.
 
 ## Why this exists
 
@@ -42,7 +42,8 @@ IDE builds.
 |---|---|
 | **M0** | `.yy` document model + corpus harness — done |
 | **M1a** | Transactional writes, shadow-git undo — done |
-| M1b | `.yyp` graph, resource CRUD, GML symbol index |
+| **M1b** | `.yyp` graph, resource CRUD, folders, events — done |
+| M1c | GML symbol index; sprite creation once an image pipeline exists |
 | M2 | `GmlSpec.xml` knowledge base, MCP server, first toolset |
 | M3 | Igor discovery + probe layer, `compile_check`, isolated build cache |
 | M4 | Injectable GML bridge: TCP, screenshots, state introspection |
@@ -87,6 +88,74 @@ Each transaction commits the state *before* it applies, so undo restores
 modified files, deletes files the transaction created, and brings back files it
 deleted.
 
+## Resources
+
+```ts
+const project = GmProject.open(root);
+
+project.transact('add an enemy', (tx) => {
+  createFolder(project, tx, 'Actors/Enemies');
+  createObject(project, tx, 'objSlime', {
+    folder: 'Actors/Enemies',
+    sprite: 'sprSlime',
+    events: [
+      { event: Events.create(), code: 'hp = 3;' },
+      { event: Events.collision('objBullet'), code: 'hp -= 1;' },
+    ],
+  });
+});
+
+renameResource(project, tx, 'sprSlime', 'sprBlob'); // rewrites every reference
+deleteResource(project, tx, 'sprBlob');             // refuses while referenced
+```
+
+Each operation stages into a transaction, so several compose into one atomic
+change set. A create touches the `.yy`, the `.yyp` `resources` array, and
+`.resource_order` when the project has one — older projects do, newer
+GameMaker versions dropped it, so it is written only when already present.
+
+**References are resolved structurally.** `spriteId`, `parentObjectId`,
+`collisionObjectId` and room instance `objectId` are all `{name, path}`
+objects, so a rename rewrites them by walking the document tree rather than
+by text substitution. Delete refuses while anything still points at the target
+unless forced. The `.yyp`'s own `resources`, `Folders` and `IncludedFiles`
+sections are excluded from that search: they catalogue resources rather than
+refer to them, and counting them would make every resource look permanently
+referenced.
+
+**New files copy the project's conventions instead of guessing.** GameMaker
+versions its `$GMType` marker keys per resource type and changes them over
+time — the same project can hold `"$GMScript":"v1"` and `"$GMObject":""`, and
+another uses `"$GMSprite":"v2"`. Rather than map IDE build numbers to tag
+values, a new resource reads the tag from a resource of the same kind already
+in the project.
+
+### Events
+
+The `eventType` to file-prefix table was derived from the corpus rather than
+from documentation: pairing `eventList` entries against sibling `.gml` files
+across **4,975 objects** produced exactly one prefix per type with no
+disagreements.
+
+| | | | |
+|---|---|---|---|
+| 0 Create | 1 Destroy | 2 Alarm | 3 Step |
+| 4 Collision | 5 Keyboard | 6 Mouse | 7 Other |
+| 8 Draw | 9 KeyPress | 10 KeyRelease | 12 CleanUp |
+
+Types 11 (Trigger, deprecated), 13 (Gesture) and 14 (PreCreate) never occurred
+and are marked unverified in the source. Collision events are named after the
+other object — `Collision_objWall.gml` — not a number.
+
+### Sprites
+
+Sprite properties (`origin`, `bboxMode`, `collisionKind`, the bbox) are
+editable. Sprite *creation* is deliberately absent: it needs frame and layer
+GUIDs, PNGs written to two locations, and a large `sequence` block — 3KB of
+`.yy` for a single-frame sprite — and there is no way to exercise that end to
+end until there is an image pipeline feeding it. When it lands, cloning an
+existing sprite's structure will beat synthesizing the `sequence` block.
+
 ## The `.yy` format, as measured
 
 Findings from sweeping **35,917 real `.yy`/`.yyp` files** across 131 projects
@@ -125,13 +194,19 @@ Other measured details, each of which would have broken a naive implementation:
 npm install
 npm test
 
-# The corpus is the oracle. Point it at a directory of real GameMaker projects:
-GML_MCP_CORPUS=d:/gamedev npm test
+# Two opt-in suites run against real data:
+GML_MCP_CORPUS=d:/gamedev npm test                  # format fidelity, 35,917 files
+GML_MCP_SAMPLE_PROJECT=path/to/project npm test     # resource ops on a real project
 ```
 
 `test/corpus.test.ts` asserts that every file parses, reproduces byte-for-byte,
 survives a scalar replacement without disturbing another byte, and returns to
 its original bytes after an insert/remove round trip.
+
+`test/integration.test.ts` copies a real project and runs the resource
+operations over it, checking that a create touches only the expected files and
+that undo restores every byte. It has been run against seven projects,
+including one using nested folders and one nearly empty.
 
 ## Prior art
 

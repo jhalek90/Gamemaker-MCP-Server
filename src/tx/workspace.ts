@@ -11,7 +11,7 @@
  * can reload a half-created resource. One burst is one coherent change.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isYyDocument, YyDoc } from '../yy/index.js';
 import { ShadowGit, type Snapshot } from './shadow.js';
@@ -119,6 +119,10 @@ export class Transaction {
         const content = this.pending.get(path)!;
         if (content === null) {
           rmSync(absolute, { force: true });
+          // A resource lives in its own folder. Deleting only the files would
+          // leave an empty directory that GameMaker still shows in the asset
+          // browser.
+          pruneEmptyDirs(this.workspace.root, absolute);
           deleted.push(path);
         } else {
           mkdirSync(dirname(absolute), { recursive: true });
@@ -173,6 +177,24 @@ export class Transaction {
   }
 }
 
+/**
+ * Remove directories left empty by a deletion, walking up towards `root`.
+ * Stops at the first non-empty directory, and never removes `root` itself.
+ */
+export function pruneEmptyDirs(root: string, from: string): void {
+  const stop = resolve(root);
+  let dir = dirname(resolve(from));
+  while (dir !== stop && dir.startsWith(stop + sep)) {
+    try {
+      if (readdirSync(dir).length > 0) break;
+      rmdirSync(dir);
+    } catch {
+      break;
+    }
+    dir = dirname(dir);
+  }
+}
+
 export class Workspace {
   private constructor(
     readonly root: string,
@@ -188,6 +210,23 @@ export class Workspace {
   /** Start a transaction. `label` names the restore point. */
   begin(label: string): Transaction {
     return new Transaction(this, label);
+  }
+
+  /**
+   * Run `body` in a transaction and commit it. If `body` throws, the
+   * transaction is abandoned without touching disk.
+   */
+  transact<T>(label: string, body: (tx: Transaction) => T): T {
+    const tx = this.begin(label);
+    let result: T;
+    try {
+      result = body(tx);
+    } catch (error) {
+      tx.abort();
+      throw error;
+    }
+    tx.commit();
+    return result;
   }
 
   /** Project-relative, forward-slashed, and guaranteed inside the project. */

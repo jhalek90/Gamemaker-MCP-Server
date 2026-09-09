@@ -15,6 +15,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { pruneEmptyDirs } from './workspace.js';
 
 /** Metadata recorded with each snapshot, carried in the commit body. */
 export interface Snapshot {
@@ -159,6 +160,7 @@ export class ShadowGit {
       const absolute = join(this.root, path);
       if (snapshot.created.includes(path)) {
         rmSync(absolute, { force: true });
+        pruneEmptyDirs(this.root, absolute);
         continue;
       }
       let content: Buffer;
