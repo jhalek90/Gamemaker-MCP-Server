@@ -1,0 +1,21 @@
+{
+  "name": "gml-mcp",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "MCP server for GameMaker",
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "vitest run",
+    "test:corpus": "vitest run corpus --reporter=basic"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
+    "@types/node": "^22.0.0"
+  }
+}
