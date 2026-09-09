@@ -4,8 +4,9 @@ An MCP server for GameMaker — giving AI agents a real connection to the engine
 faithful project editing, a compile loop, and live introspection of a running
 game.
 
-Status: **M1 complete.** The `.yy` document model, transactional writes, and
-resource CRUD are built and validated against real projects.
+Status: **M2 complete — the server runs.** An agent can search the GML API,
+check its own code for invented functions, and edit a project through
+transactional tools with undo.
 
 ## Why this exists
 
@@ -44,7 +45,7 @@ IDE builds.
 | **M1a** | Transactional writes, shadow-git undo — done |
 | **M1b** | `.yyp` graph, resource CRUD, folders, events — done |
 | M1c | GML symbol index; sprite creation once an image pipeline exists |
-| M2 | `GmlSpec.xml` knowledge base, MCP server, first toolset |
+| **M2** | `GmlSpec.xml` knowledge base, hallucination checker, MCP server — done |
 | M3 | Igor discovery + probe layer, `compile_check`, isolated build cache |
 | M4 | Injectable GML bridge: TCP, screenshots, state introspection |
 | M5 | Live tunables, seeded input, GML test runner |
@@ -87,6 +88,82 @@ files are CRLF and git would otherwise rewrite them on restore.
 Each transaction commits the state *before* it applies, so undo restores
 modified files, deletes files the transaction created, and brings back files it
 deleted.
+
+## Running it
+
+```sh
+npm install && npm run build
+node dist/mcp/cli.js --project path/to/YourGame
+```
+
+Register it with an MCP client (Claude Code shown):
+
+```json
+{
+  "mcpServers": {
+    "gml": {
+      "command": "node",
+      "args": ["path/to/GML_MCP/dist/mcp/cli.js", "--project", "path/to/YourGame"]
+    }
+  }
+}
+```
+
+### Tools
+
+| Tool | |
+|---|---|
+| `gml_search` | Find GML functions by name or description |
+| `gml_lookup` | Full signature, parameter types and docs for one identifier |
+| `gml_check` | Report calls to functions that exist nowhere |
+| `gml_project_info`, `gml_list_resources`, `gml_read`, `gml_list_events` | Read the project |
+| `gml_create_object`, `gml_create_script`, `gml_create_folder` | Add resources |
+| `gml_set_event`, `gml_remove_event` | Write gameplay logic |
+| `gml_set_sprite_properties`, `gml_rename_resource`, `gml_delete_resource` | Edit and remove |
+| `gml_undo`, `gml_history` | Step back through changes |
+
+Every mutation is one transaction with a named restore point, so `gml_undo`
+reverses whole operations rather than individual file writes.
+
+## Grounding, not preloading
+
+The GML reference is exposed through search and lookup rather than loaded into
+context. Measured on a real `GmlSpec.xml`:
+
+| Representation | ~tokens |
+|---|---|
+| Raw `GmlSpec.xml` | 368,000 |
+| Distilled to signatures + descriptions + parameter docs | 198,000 |
+| Signatures only | 39,000 |
+| Names only | 11,600 |
+| **One `gml_lookup` result** | **80–200** |
+
+Preloading would buy one saved round-trip at roughly a thousand times the
+cost, and would displace the project's own code — the thing the agent actually
+needs to reason about.
+
+But search alone cannot fix hallucination, because a confident agent never
+asks. So `gml_check` validates after the fact, and `gml_set_event` runs it
+automatically on the code it just wrote:
+
+```
+Wrote objects/objPlayer/Step_0.gml
+objects/objPlayer/Step_0.gml:2:1  Unknown function 'instance_create_layerr'
+  (did you mean instance_create_layer?)
+```
+
+The checker is tuned to be conservative — one that cries wolf teaches an agent
+to ignore its real findings. Measured across **15,952 `.gml` files in 66 real
+projects**, the false positives it surfaced drove four fixes: extension APIs
+(Steamworks alone declares hundreds of functions present in no `.gml` and no
+runtime spec), struct and constructor methods called bare by sibling methods,
+`#region` labels whose free text parsed as calls, and functions declared in
+the file being checked but not yet on disk. That took it from 3,126
+diagnostics to **309**, with 49 of 66 projects fully clean. Spot-checking the
+remainder found genuine dangling calls — functions invoked but defined nowhere.
+
+The spec is read from the user's own install, so it always matches the runtime
+they have, and nothing of GameMaker's documentation is redistributed.
 
 ## Resources
 
