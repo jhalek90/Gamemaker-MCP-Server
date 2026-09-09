@@ -1,13 +1,18 @@
 /**
  * Derive the GameMaker eventType -> event-file-prefix mapping empirically.
  *
+ * Usage: npx tsx tools/derive-event-types.mjs [corpus-dir]
+ *
+ * Regenerates the evidence behind the table in src/project/events.ts. Re-run
+ * against a corpus including newer projects to check for drift.
+ *
  * For each object folder, pair eventList entries from the .yy with the .gml
  * files beside it. Only count unambiguous cases: exactly one event with a
  * given eventNum, and exactly one file with that numeric suffix.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { YyDoc } from './src/yy/index.js';
+import { YyDoc } from '../src/yy/index.js';
 
 function collect(dir, out = [], depth = 0) {
   if (depth > 12) return out;
@@ -28,7 +33,7 @@ const pairs = new Map();      // "type|prefix" -> count
 const collisionShape = new Map();
 let objects = 0;
 
-for (const file of collect('d:/gamedev')) {
+for (const file of collect(process.argv[2] ?? 'd:/gamedev')) {
   let doc;
   try { doc = YyDoc.parse(readFileSync(file, 'utf8')); } catch { continue; }
   let events;
