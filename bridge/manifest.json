@@ -9,7 +9,12 @@
   "dev": [
     "obj_gmlmcp_devscene",
     "Room1",
-    "scr_gmlmcp_selftest"
+    "scr_gmlmcp_selftest",
+    "spr_ball",
+    "spr_crate",
+    "spr_arrow",
+    "spr_pulse",
+    "obj_sprite_demo"
   ],
   "notes": "dev resources exist only for developing and testing the bridge and must never be injected."
 }

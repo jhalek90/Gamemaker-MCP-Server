@@ -1,7 +1,14 @@
 /**
  * Build sprites from shapes, then prove GameMaker loads and draws them.
  *
- * Usage: npx tsx tools/sprite-demo.mts
+ *   npx tsx tools/sprite-demo.mts                 work on a throwaway copy
+ *   npx tsx tools/sprite-demo.mts --in-place      work on bridge/mcp_bridge itself
+ *   npx tsx tools/sprite-demo.mts <project path>  work on that project
+ *
+ * In-place is for checking what GameMaker's IDE does with the generated
+ * files: open the project, run this, save, and see whether the .yy shows a
+ * diff. Everything lands in one transaction, so `workspace.undo()` removes
+ * the lot.
  */
 import { cpSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,11 +23,22 @@ import {
   createSprite,
   Events,
   GmProject,
+  listRoomInstances,
 } from '../src/project/index.js';
 
-const root = mkdtempSync(join(tmpdir(), 'gml-sprites-'));
-cpSync(join(bridgeRoot(), 'mcp_bridge'), root, { recursive: true });
+const argument = process.argv[2];
+const inPlace = argument !== undefined;
+const source = join(bridgeRoot(), 'mcp_bridge');
+const root =
+  argument === undefined
+    ? mkdtempSync(join(tmpdir(), 'gml-sprites-'))
+    : argument === '--in-place'
+      ? source
+      : argument;
+if (argument === undefined) cpSync(source, root, { recursive: true });
+
 const project = GmProject.open(root);
+console.log(`${inPlace ? 'working in place on' : 'working on a copy at'} ${project.root}\n`);
 
 // -- draw the sprites -----------------------------------------------------
 
@@ -50,20 +68,7 @@ const pulse = [12, 20, 28].map((radius) =>
   new Canvas(64, 64).circle(32, 32, radius, '#3cb44b').circle(32, 32, radius, '#1a5a24', { thickness: 3 }),
 );
 
-const created = project.transact('create shape sprites', (tx) => {
-  const refs = [
-    createSprite(project, tx, 'spr_ball', { frames: [ball], origin: 'middleCentre' }),
-    createSprite(project, tx, 'spr_crate', { frames: [crate] }),
-    createSprite(project, tx, 'spr_arrow', { frames: [arrow], origin: 'middleCentre' }),
-    createSprite(project, tx, 'spr_pulse', { frames: pulse, playbackSpeed: 8 }),
-  ];
-
-  // Something to draw them. Draw GUI so it sits over the dev scene.
-  createObject(project, tx, 'obj_sprite_demo', {
-    events: [
-      {
-        event: Events.draw(64),
-        code: `draw_set_colour(c_black);
+const DRAW_GUI = `draw_set_colour(c_black);
 draw_text(40, 40, "sprites built from shapes, drawn by GameMaker");
 
 draw_sprite(spr_ball, 0, 120, 140);
@@ -78,26 +83,44 @@ for (var _i = 0; _i < sprite_get_number(spr_pulse); _i++) {
 draw_text(40, 340, "sizes: " + string(sprite_get_width(spr_ball)) + "x" + string(sprite_get_height(spr_ball))
 	+ "   origin: " + string(sprite_get_xoffset(spr_ball)) + "," + string(sprite_get_yoffset(spr_ball))
 	+ "   frames: " + string(sprite_get_number(spr_pulse)));
-`,
-      },
-    ],
-  });
-  return refs.map((r) => r.name);
-});
-console.log('created:', created.join(', '), '+ obj_sprite_demo');
+`;
 
-project.transact('place demo', (tx) => {
-  addRoomInstance(project, tx, 'Room1', 'obj_sprite_demo', { x: 0, y: 0 });
-});
+const already = project.has('spr_ball');
+if (already) {
+  console.log('sprites already present; leaving them alone\n');
+} else {
+  // One transaction, so a single undo reverses everything this script did.
+  const made = project.transact('sprite demo: shapes, object and placement', (tx) => {
+    const refs = [
+      createSprite(project, tx, 'spr_ball', { frames: [ball], origin: 'middleCentre' }),
+      createSprite(project, tx, 'spr_crate', { frames: [crate] }),
+      createSprite(project, tx, 'spr_arrow', { frames: [arrow], origin: 'middleCentre' }),
+      createSprite(project, tx, 'spr_pulse', { frames: pulse, playbackSpeed: 8 }),
+    ];
+    createObject(project, tx, 'obj_sprite_demo', {
+      // Draw GUI, so it sits over whatever else the room draws.
+      events: [{ event: Events.draw(64), code: DRAW_GUI }],
+    });
+    return refs.map((r) => r.name);
+  });
+  console.log('created:', made.join(', '), '+ obj_sprite_demo');
+}
+
+if (!listRoomInstances(project, 'Room1').some((i) => i.object === 'obj_sprite_demo')) {
+  project.transact('place the sprite demo', (tx) =>
+    addRoomInstance(project, tx, 'Room1', 'obj_sprite_demo', { x: 0, y: 0 }),
+  );
+  console.log('placed obj_sprite_demo in Room1');
+}
 
 // -- does GameMaker accept them? -----------------------------------------
 
 const runner = IgorRunner.create(project);
 const build = await runner.compile();
-console.log(`compile: ok=${build.ok} ${build.durationMs}ms  ${formatBuildDiagnostics(build.diagnostics)}`);
+console.log(`\ncompile: ok=${build.ok} ${build.durationMs}ms  ${formatBuildDiagnostics(build.diagnostics)}`);
 if (!build.ok) {
   console.log(build.log.split('\n').slice(-25).join('\n'));
-  rmSync(root, { recursive: true, force: true });
+  if (!inPlace) rmSync(root, { recursive: true, force: true });
   process.exit(1);
 }
 
@@ -117,12 +140,14 @@ try {
   console.log(game.log().split('\n').slice(-20).join('\n'));
 } finally {
   game.stop();
-  for (let i = 0; i < 10; i++) {
-    try {
-      rmSync(root, { recursive: true, force: true });
-      break;
-    } catch {
-      await new Promise((r) => setTimeout(r, 500));
+  if (!inPlace) {
+    for (let i = 0; i < 10; i++) {
+      try {
+        rmSync(root, { recursive: true, force: true });
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 500));
+      }
     }
   }
 }
