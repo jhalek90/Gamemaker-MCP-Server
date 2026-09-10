@@ -1,0 +1,1 @@
+if (!variable_global_exists("gmlmcp_tunables")) global.gmlmcp_tunables = {};

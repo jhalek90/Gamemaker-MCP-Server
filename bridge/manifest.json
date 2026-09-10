@@ -1,0 +1,14 @@
+{
+  "protocol": 1,
+  "description": "Resources copied into a target project when the bridge is injected.",
+  "inject": [
+    "scr_gmlmcp_protocol",
+    "scr_gmlmcp_commands",
+    "obj_gmlmcp_bridge"
+  ],
+  "dev": [
+    "obj_gmlmcp_devscene",
+    "Room1"
+  ],
+  "notes": "dev resources exist only for developing and testing the bridge and must never be injected."
+}

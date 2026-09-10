@@ -10,7 +10,7 @@
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Transaction } from '../tx/index.js';
-import { comparePaths, emit, quote, type YyValue } from '../yy/index.js';
+import { comparePaths, emit, quote, raw, type YyValue } from '../yy/index.js';
 import {
   eventFileName,
   parseEventFileName,
@@ -355,6 +355,148 @@ export function setSpriteProperties(
     doc.set(['bbox_bottom'], properties.bbox.bottom);
   }
   tx.writeDoc(ref.path, doc);
+}
+
+// -- rooms ----------------------------------------------------------------
+
+/**
+ * Place an instance of an object into a room.
+ *
+ * Two details matter and are easy to get wrong. GameMaker writes instance
+ * coordinates and transforms as floats — `"x":384.0`, `"imageSpeed":1.0` —
+ * so they are emitted as raw literals; letting JavaScript render `1.0` as
+ * `1` would rewrite every instance in the room on the next save. And a room
+ * tracks its instances twice, in the layer and in `instanceCreationOrder`,
+ * which have to stay in step.
+ */
+export function addRoomInstance(
+  project: GmProject,
+  tx: Transaction,
+  roomName: string,
+  objectName: string,
+  options: { x?: number; y?: number; layer?: string; name?: string } = {},
+): string {
+  const room = requireResource(project, tx, roomName);
+  if (room.kind !== 'rooms') throw new ProjectError(`${roomName} is not a room`);
+  const object = requireResource(project, tx, objectName);
+  if (object.kind !== 'objects') throw new ProjectError(`${objectName} is not an object`);
+
+  const doc = project.readDoc(room.path, tx);
+  const layers = doc.get(['layers']) as { name: string; resourceType: string }[];
+  const index = options.layer
+    ? layers.findIndex((layer) => layer.name === options.layer)
+    : layers.findIndex((layer) => layer.resourceType === 'GMRInstanceLayer');
+  if (index === -1) {
+    throw new ProjectError(
+      options.layer
+        ? `Room ${roomName} has no layer named ${options.layer}`
+        : `Room ${roomName} has no instance layer`,
+    );
+  }
+
+  const existing = new Set(
+    (doc.get(['instanceCreationOrder']) as { name: string }[] | undefined)?.map((e) => e.name) ?? [],
+  );
+  let name = options.name ?? newInstanceName();
+  while (existing.has(name)) name = newInstanceName();
+
+  const x = options.x ?? 0;
+  const y = options.y ?? 0;
+  doc.push(['layers', index, 'instances'], {
+    $GMRInstance: project.tagFor('GMRInstance', 'v4'),
+    '%Name': name,
+    colour: raw('4294967295'),
+    frozen: false,
+    hasCreationCode: false,
+    ignore: false,
+    imageIndex: raw('0'),
+    imageSpeed: raw('1.0'),
+    inheritCode: false,
+    inheritedItemId: null,
+    inheritItemSettings: false,
+    isDnd: false,
+    name,
+    objectId: { name: object.name, path: object.path },
+    properties: [],
+    resourceType: 'GMRInstance',
+    resourceVersion: '2.0',
+    rotation: raw('0.0'),
+    scaleX: raw('1.0'),
+    scaleY: raw('1.0'),
+    x: raw(asFloat(x)),
+    y: raw(asFloat(y)),
+  });
+
+  if (doc.has(['instanceCreationOrder'])) {
+    doc.push(['instanceCreationOrder'], { name, path: room.path });
+  }
+  tx.writeDoc(room.path, doc);
+  return name;
+}
+
+/** Remove an instance from a room, by its `inst_` name. */
+export function removeRoomInstance(
+  project: GmProject,
+  tx: Transaction,
+  roomName: string,
+  instanceName: string,
+): void {
+  const room = requireResource(project, tx, roomName);
+  const doc = project.readDoc(room.path, tx);
+  const layers = doc.get(['layers']) as { instances?: { name: string }[] }[];
+  let removed = false;
+  for (let layer = 0; layer < layers.length; layer++) {
+    const at = layers[layer]!.instances?.findIndex((i) => i.name === instanceName) ?? -1;
+    if (at === -1) continue;
+    doc.remove(['layers', layer, 'instances', at]);
+    removed = true;
+    break;
+  }
+  if (!removed) throw new ProjectError(`Room ${roomName} has no instance ${instanceName}`);
+
+  const order = (doc.get(['instanceCreationOrder']) as { name: string }[] | undefined) ?? [];
+  const orderAt = order.findIndex((e) => e.name === instanceName);
+  if (orderAt !== -1) doc.remove(['instanceCreationOrder', orderAt]);
+  tx.writeDoc(room.path, doc);
+}
+
+/** Instances currently placed in a room. */
+export function listRoomInstances(
+  project: GmProject,
+  roomName: string,
+  tx?: Transaction,
+): { name: string; object: string; x: number; y: number; layer: string }[] {
+  const room = requireResource(project, tx, roomName);
+  const doc = project.readDoc(room.path, tx);
+  const layers = doc.get(['layers']) as {
+    name: string;
+    instances?: { name: string; objectId: { name: string } | null; x: number; y: number }[];
+  }[];
+  const out: { name: string; object: string; x: number; y: number; layer: string }[] = [];
+  for (const layer of layers) {
+    for (const instance of layer.instances ?? []) {
+      out.push({
+        name: instance.name,
+        object: instance.objectId?.name ?? '<none>',
+        x: instance.x,
+        y: instance.y,
+        layer: layer.name,
+      });
+    }
+  }
+  return out;
+}
+
+/** GameMaker names instances `inst_` plus uppercase hex. */
+function newInstanceName(): string {
+  let hex = '';
+  for (let i = 0; i < 8; i++) hex += '0123456789ABCDEF'[Math.floor(Math.random() * 16)];
+  return `inst_${hex}`;
+}
+
+/** Render a number the way GameMaker writes room coordinates. */
+function asFloat(value: number): string {
+  return Number.isInteger(value) ? `${value}.0` : String(value);
 }
 
 // -- delete and rename ----------------------------------------------------

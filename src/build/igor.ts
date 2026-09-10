@@ -45,6 +45,17 @@ export interface BuildOptions {
   ignoreCache?: boolean;
 }
 
+export interface RunHandle {
+  /** Resolves when the game process exits. */
+  readonly exited: Promise<{ exitCode: number | null; log: string }>;
+  /** Everything the game and Igor have printed so far. */
+  log(): string;
+  /** Wait for output matching a pattern. */
+  waitFor(pattern: RegExp, timeoutMs?: number): Promise<string>;
+  /** Kill the game and release its port. */
+  stop(): void;
+}
+
 export interface BuildResult {
   ok: boolean;
   exitCode: number | null;
@@ -145,6 +156,89 @@ export class IgorRunner {
     args.push('--', workerName(), 'PackageZip');
 
     return this.invoke(args, options.timeoutMs ?? 10 * 60 * 1000);
+  }
+
+  /**
+   * Build and launch the game, returning a handle to the running process.
+   *
+   * `show_debug_message` output arrives on Igor's stdout, so this is also how
+   * the agent reads anything the game prints.
+   */
+  async run(options: BuildOptions = {}): Promise<RunHandle> {
+    const cache = join(this.buildDir, 'cache');
+    const temp = join(this.buildDir, 'temp');
+    for (const directory of [cache, temp]) mkdirSync(directory, { recursive: true });
+
+    const args = [
+      `--project=${join(this.project.root, this.project.yypPath)}`,
+      `--config=${options.config ?? 'Default'}`,
+      `--rp=${this.runtime.path}`,
+      `--user=${this.userFolder}`,
+      `--cache=${cache}`,
+      `--temp=${temp}`,
+      '-r',
+      options.target ?? 'VM',
+    ];
+    if (options.ignoreCache) args.push('--ic');
+    args.push('--', workerName(), 'Run');
+
+    const child = spawn(this.runtime.igorPath!, args, {
+      cwd: this.project.root,
+      windowsHide: false,
+    });
+
+    let log = '';
+    const waiters: { pattern: RegExp; resolve: (line: string) => void }[] = [];
+    const absorb = (chunk: Buffer): void => {
+      const text = chunk.toString();
+      log += text;
+      for (let i = waiters.length - 1; i >= 0; i--) {
+        const match = waiters[i]!.pattern.exec(log);
+        if (match) {
+          waiters[i]!.resolve(match[0]);
+          waiters.splice(i, 1);
+        }
+      }
+    };
+    child.stdout.on('data', absorb);
+    child.stderr.on('data', absorb);
+
+    const exited = new Promise<{ exitCode: number | null; log: string }>((resolve) => {
+      child.on('close', (code) => resolve({ exitCode: code, log }));
+      child.on('error', (error) => {
+        log += `\n${error.message}`;
+        resolve({ exitCode: null, log });
+      });
+    });
+
+    return {
+      exited,
+      log: () => log,
+      waitFor: (pattern, timeoutMs = 120000) =>
+        new Promise<string>((resolve, reject) => {
+          const already = pattern.exec(log);
+          if (already) return resolve(already[0]);
+          const waiter = { pattern, resolve };
+          waiters.push(waiter);
+          setTimeout(() => {
+            const at = waiters.indexOf(waiter);
+            if (at !== -1) waiters.splice(at, 1);
+            reject(new BuildError(`Timed out waiting for ${pattern} in game output`));
+          }, timeoutMs).unref?.();
+        }),
+      stop: () => {
+        // Igor spawns the game as a child; killing the tree is the only way
+        // to be sure the window closes and the port is released.
+        if (child.pid !== undefined) {
+          try {
+            if (platform() === 'win32') spawn('taskkill', ['/pid', String(child.pid), '/T', '/F']);
+            else child.kill('SIGTERM');
+          } catch {
+            child.kill();
+          }
+        }
+      },
+    };
   }
 
   private async invoke(args: string[], timeoutMs: number): Promise<BuildResult> {
