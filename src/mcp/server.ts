@@ -30,11 +30,13 @@ import {
   ProjectSymbols,
   removeEvent,
   renameResource,
+  addRoomInstance,
   setSpriteProperties,
   type Diagnostic,
   type GmEvent,
 } from '../project/index.js';
-import { formatBuildDiagnostics, IgorRunner } from '../build/index.js';
+import { formatBuildDiagnostics, IgorRunner, type RunHandle } from '../build/index.js';
+import { BridgeClient, bridgeStatus, ejectBridge, injectBridge } from '../bridge/index.js';
 import { GmlSpec, requireRuntime, signatureOf, summarize, type GmlEntry } from '../spec/index.js';
 
 const EventSchema = z.object({
@@ -96,6 +98,25 @@ export function createServer({ projectRoot }: ServerOptions): McpServer {
     return cachedSpec;
   };
   const project = (): GmProject => GmProject.open(projectRoot);
+
+  // The running game and its bridge connection outlive individual tool calls.
+  let game: RunHandle | undefined;
+  let live: BridgeClient | undefined;
+
+  const requireLive = (): BridgeClient => {
+    if (!live?.isOpen) {
+      throw new Error('No game is running. Use gml_run first.');
+    }
+    return live;
+  };
+
+  const shutdown = (): void => {
+    live?.close();
+    live = undefined;
+    game?.stop();
+    game = undefined;
+  };
+  process.once('exit', shutdown);
 
   // -- GML reference ------------------------------------------------------
 
@@ -430,6 +451,197 @@ export function createServer({ projectRoot }: ServerOptions): McpServer {
         ? `Build succeeded in ${seconds}s (${target}).`
         : `Build FAILED in ${seconds}s (exit ${result.exitCode}).`;
       return text(`${heading}\n${formatBuildDiagnostics(result.diagnostics)}`);
+    },
+  );
+
+  // -- live game ----------------------------------------------------------
+
+  server.registerTool(
+    'gml_bridge',
+    {
+      description:
+        'Install, remove or inspect the in-game bridge — a small set of GML resources ' +
+        '(obj_gmlmcp_bridge and two scripts) that let this server talk to the running game. ' +
+        'Ejecting restores the project to exactly the bytes it had before.',
+      inputSchema: {
+        action: z.enum(['status', 'inject', 'eject']).default('status'),
+      },
+    },
+    async ({ action }) => {
+      const current = project();
+      if (action === 'status') {
+        const status = bridgeStatus(current);
+        return text(
+          status.installed
+            ? `Bridge installed (protocol ${status.protocol}): ${status.present.join(', ')}`
+            : `Bridge not installed. Missing: ${status.missing.join(', ')}`,
+        );
+      }
+      if (action === 'inject') {
+        const created = current.transact('inject bridge', (tx) => injectBridge(current, tx));
+        return text(
+          `Injected ${created.join(', ')}.\n` +
+            'Place obj_gmlmcp_bridge in a room (gml_add_room_instance) so it starts with the game.',
+        );
+      }
+      const removed = current.transact('eject bridge', (tx) => ejectBridge(current, tx));
+      return text(removed.length ? `Removed ${removed.join(', ')}.` : 'Bridge was not installed.');
+    },
+  );
+
+  server.registerTool(
+    'gml_add_room_instance',
+    {
+      description: 'Place an instance of an object into a room.',
+      inputSchema: {
+        room: z.string(),
+        object: z.string(),
+        x: z.number().default(0),
+        y: z.number().default(0),
+        layer: z.string().optional().describe('Defaults to the room\'s first instance layer'),
+      },
+    },
+    async ({ room, object, x, y, layer }) => {
+      const current = project();
+      const name = current.transact(`place ${object} in ${room}`, (tx) =>
+        addRoomInstance(current, tx, room, object, { x, y, layer }),
+      );
+      return text(`Placed ${object} in ${room} at ${x},${y} as ${name}`);
+    },
+  );
+
+  server.registerTool(
+    'gml_run',
+    {
+      description:
+        'Build and launch the game, then connect to its bridge. Leaves the game running so ' +
+        'the other live tools can inspect it. Requires the bridge to be injected and placed ' +
+        'in the starting room.',
+      inputSchema: {
+        config: z.string().optional(),
+        target: z.enum(['VM', 'YYC']).default('VM'),
+      },
+    },
+    async ({ config, target }) => {
+      const current = project();
+      if (!bridgeStatus(current).installed) {
+        return text('The bridge is not injected. Run gml_bridge with action "inject" first.');
+      }
+      shutdown();
+
+      const runner = IgorRunner.create(current);
+      game = await runner.run({ config, target });
+      try {
+        await game.waitFor(/\[gmlmcp\][^\n]*/, 180000);
+        live = await BridgeClient.connect();
+      } catch (error) {
+        const tail = game.log().split('\n').slice(-20).join('\n');
+        shutdown();
+        return text(`Game did not come up: ${(error as Error).message}\n\n${tail}`);
+      }
+      const state = await live.request('ping');
+      return text(`Game running. Bridge connected.\n${JSON.stringify(state, null, 2)}`);
+    },
+  );
+
+  server.registerTool(
+    'gml_stop',
+    { description: 'Stop the running game and close the bridge connection.', inputSchema: {} },
+    async () => {
+      if (!game) return text('No game is running.');
+      shutdown();
+      return text('Stopped.');
+    },
+  );
+
+  server.registerTool(
+    'gml_screenshot',
+    {
+      description:
+        'Capture what the running game is showing right now, and return the image path so it ' +
+        'can be read. Taken at the end of a frame, so the picture is complete.',
+      inputSchema: { name: z.string().optional().describe('File name; defaults to a timestamp') },
+    },
+    async ({ name }) => {
+      const result = (await requireLive().request('screenshot', name ? { name } : {})) as {
+        file: string;
+        directory: string;
+      };
+      return text(`Saved ${result.directory}${result.file}`);
+    },
+  );
+
+  server.registerTool(
+    'gml_live_state',
+    {
+      description:
+        'What the running game is doing: current room, frame rate, and the instances that exist.',
+      inputSchema: {
+        object: z.string().optional().describe('Limit to instances of this object'),
+        limit: z.number().int().min(1).max(200).default(50),
+      },
+    },
+    async ({ object, limit }) => {
+      const client = requireLive();
+      const ping = await client.request('ping');
+      const instances = await client.request('instances', object ? { object, limit } : { limit });
+      return text(JSON.stringify({ ...(ping as object), ...(instances as object) }, null, 2));
+    },
+  );
+
+  server.registerTool(
+    'gml_live_var',
+    {
+      description:
+        'Read or write a variable in the running game. Omit value to read. Scope is "global" ' +
+        'or an object name or instance id.',
+      inputSchema: {
+        name: z.string(),
+        scope: z.string().default('global'),
+        value: z.any().optional().describe('Omit to read; provide to write'),
+      },
+    },
+    async ({ name, scope, value }) => {
+      const client = requireLive();
+      const result =
+        value === undefined
+          ? await client.request('get_var', { scope, name })
+          : await client.request('set_var', { scope, name, value });
+      return text(JSON.stringify(result));
+    },
+  );
+
+  server.registerTool(
+    'gml_live_call',
+    {
+      description:
+        'Call a script function in the running game. GML cannot evaluate new code at runtime, ' +
+        'so only functions the project already defines can be called.',
+      inputSchema: {
+        function: z.string().describe('Script function name'),
+        args: z.array(z.any()).default([]),
+      },
+    },
+    async ({ function: fn, args }) => {
+      const result = await requireLive().request('call', { function: fn, args });
+      return text(JSON.stringify(result));
+    },
+  );
+
+  server.registerTool(
+    'gml_tunables',
+    {
+      description:
+        'Read or adjust the live tunables the game has registered — speeds, gravity, spawn ' +
+        'rates. Changes take effect immediately with no recompile, which makes an ' +
+        'adjust-then-screenshot loop practical for tuning game feel.',
+      inputSchema: {
+        set: z.record(z.string(), z.any()).optional().describe('Values to change; omit to read'),
+      },
+    },
+    async ({ set }) => {
+      const result = await requireLive().request('tunables', set ? { set } : {});
+      return text(JSON.stringify(result, null, 2));
     },
   );
 

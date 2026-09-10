@@ -183,3 +183,19 @@ describe('validation', () => {
     expect(() => tx.commit()).toThrow(/non-JSON/);
   });
 });
+
+describe('empty transactions', () => {
+  it('commits as a no-op rather than failing', () => {
+    const result = workspace.begin('nothing to do').commit();
+    expect(result.written).toEqual([]);
+    expect(result.deleted).toEqual([]);
+    expect(result.snapshot).toBe('');
+  });
+
+  it('records no restore point, so undo still reaches the last real change', () => {
+    workspace.begin('real change').write('a.gml', 'x;\n').commit();
+    workspace.begin('nothing to do').commit();
+    expect(workspace.history().map((s) => s.label)).toEqual(['real change']);
+    expect(workspace.undo()?.label).toBe('real change');
+  });
+});

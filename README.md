@@ -4,9 +4,9 @@ An MCP server for GameMaker — giving AI agents a real connection to the engine
 faithful project editing, a compile loop, and live introspection of a running
 game.
 
-Status: **M3 complete — the loop closes.** An agent can search the GML API,
-check its own code for invented functions, edit a project through
-transactional tools with undo, and compile to find out whether it worked.
+Status: **M4 complete — the agent can see the game.** Search the GML API,
+check code for invented functions, edit a project transactionally with undo,
+compile, then run the game and inspect it live — including screenshots.
 
 ## Why this exists
 
@@ -47,7 +47,7 @@ IDE builds.
 | M1c | GML symbol index; sprite creation once an image pipeline exists |
 | **M2** | `GmlSpec.xml` knowledge base, hallucination checker, MCP server — done |
 | **M3** | Igor probe layer, `gml_compile`, isolated build cache — done |
-| M4 | Injectable GML bridge: TCP, screenshots, state introspection |
+| **M4** | Injectable GML bridge: TCP, screenshots, state introspection — done |
 | M5 | Live tunables, seeded input, GML test runner |
 
 ## Transactions and undo
@@ -121,10 +121,70 @@ Register it with an MCP client (Claude Code shown):
 | `gml_create_object`, `gml_create_script`, `gml_create_folder` | Add resources |
 | `gml_set_event`, `gml_remove_event` | Write gameplay logic |
 | `gml_set_sprite_properties`, `gml_rename_resource`, `gml_delete_resource` | Edit and remove |
+| `gml_bridge`, `gml_add_room_instance` | Install the in-game bridge and place it |
+| `gml_run`, `gml_stop` | Launch the game and connect to it |
+| `gml_screenshot` | Capture what the game is showing, as an image to read |
+| `gml_live_state`, `gml_live_var`, `gml_live_call`, `gml_tunables` | Inspect and steer the running game |
 | `gml_undo`, `gml_history` | Step back through changes |
 
 Every mutation is one transaction with a named restore point, so `gml_undo`
 reverses whole operations rather than individual file writes.
+
+## The live bridge
+
+The bridge is a real GameMaker project at `bridge/mcp_bridge` — openable,
+runnable and debuggable in the IDE, with Feather and breakpoints. Authoring it
+as escaped strings inside TypeScript would have made it miserable to iterate
+on, and this way our own `gml_compile` verifies the one piece of GML we ship.
+
+```
+gml_bridge { action: "inject" }
+gml_add_room_instance { room: "Room1", object: "obj_gmlmcp_bridge" }
+gml_run
+gml_tunables { set: { steering: 0.75, top_speed: 12 } }
+gml_screenshot          ->  C:\Users\you\AppData\Local\YourGame\shot.png
+```
+
+**Injection copies the GML, not the `.yy` files.** Resources are re-created
+through the normal project API so they adopt the target's own conventions —
+copying `.yy` files verbatim would push our authoring version's format into a
+project on a different GameMaker release, the drift problem avoided everywhere
+else here. Ejecting restores the project **byte for byte**, which the
+transaction layer makes directly testable.
+
+**Protocol** is newline-delimited JSON over raw TCP, game as server on port
+5959. `json_stringify` escapes newlines inside strings, so a bare newline is
+an unambiguous frame terminator with no length prefix to keep in sync across
+partial reads. The greeting carries a protocol version, so a stale injected
+copy is caught on connect rather than mis-parsed.
+
+**GML has no `eval`.** The bridge cannot run code sent over the wire, so every
+capability is an explicit verb over named assets: `ping`, `get_var`,
+`set_var`, `instances`, `call`, `create`, `destroy`, `goto_room`, `speed`,
+`tunables`, `screenshot`. Anything genuinely new needs an edit and a
+recompile — about three seconds.
+
+**Live tunables are the exception that makes tuning practical.** Game code
+registers values it wants adjustable; changing them takes effect immediately.
+Adjust, screenshot, look, adjust again — no recompile in the loop. That is the
+one thing a text-only agent cannot do at all.
+
+Screenshots are deferred to Post Draw, because `screen_save` captures the back
+buffer and an async event would catch a partly drawn frame.
+
+### What only a running game will tell you
+
+The first live run failed with:
+
+```
+Client(1) Connected: ::ffff:127.0.0.1
+network_send_raw() - can only be used on TCP sockets (not servers)
+```
+
+On a connect event `async_load[? "id"]` is the *server* socket; the client is
+under `"socket"`. **Both `gml_check` and `gml_compile` passed the broken
+version** — every function existed and the syntax was fine. A fair reminder of
+where static checking stops, and why the bridge earns its place.
 
 ## Compiling
 
@@ -332,6 +392,10 @@ GML_MCP_SAMPLE_PROJECT=path/to/project npm test     # resource ops on a real pro
 `test/corpus.test.ts` asserts that every file parses, reproduces byte-for-byte,
 survives a scalar replacement without disturbing another byte, and returns to
 its original bytes after an insert/remove round trip.
+
+`tools/live-demo.mts` drives the whole thing through MCP against a copy of a
+real project: inject, place, check, compile, run, inspect, screenshot.
+`tools/bridge-smoke.mts` does the same against the bridge project itself.
 
 `test/integration.test.ts` copies a real project and runs the resource
 operations over it, checking that a create touches only the expected files and

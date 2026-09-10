@@ -102,7 +102,12 @@ export class Transaction {
     this.done = true;
 
     const paths = this.paths;
-    if (paths.length === 0) throw new TransactionError('Nothing to commit');
+    if (paths.length === 0) {
+      // An operation that found nothing to do is a legitimate outcome, not a
+      // failure: ejecting a bridge from a project that never had one should
+      // report that, not throw. No snapshot is taken because nothing changed.
+      return { snapshot: '', written: [], deleted: [] };
+    }
 
     this.validate();
 
