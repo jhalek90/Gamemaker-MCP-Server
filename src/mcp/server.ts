@@ -31,6 +31,7 @@ import {
   removeEvent,
   renameResource,
   addRoomInstance,
+  createSprite,
   setSpriteProperties,
   type Diagnostic,
   type GmEvent,
@@ -38,6 +39,7 @@ import {
 import { formatBuildDiagnostics, IgorRunner, type RunHandle } from '../build/index.js';
 import { BridgeClient, bridgeStatus, ejectBridge, injectBridge } from '../bridge/index.js';
 import { formatReport, runTests, type GmTestSpec } from '../testing/index.js';
+import { drawFrame, type Shape } from '../image/index.js';
 import { GmlSpec, requireRuntime, signatureOf, summarize, type GmlEntry } from '../spec/index.js';
 
 const EventSchema = z.object({
@@ -70,6 +72,25 @@ const StepSchema = z.object({
   goto: z.string().optional().describe('Change to this room'),
   screenshot: z.string().optional(),
   expect: ExpectationSchema.optional(),
+});
+
+const ShapeSchema = z.object({
+  type: z.enum(['fill', 'rect', 'circle', 'ellipse', 'polygon', 'line']),
+  colour: z.string().describe('#rrggbb, #rrggbbaa, or a name such as red, teal, transparent'),
+  thickness: z.number().optional().describe('Outline width; omit to fill the shape'),
+  antialias: z.boolean().optional().describe('Defaults on for curves, off for rectangles'),
+  x: z.number().optional(),
+  y: z.number().optional(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+  radius: z.number().optional(),
+  radiusX: z.number().optional(),
+  radiusY: z.number().optional(),
+  x1: z.number().optional(),
+  y1: z.number().optional(),
+  x2: z.number().optional(),
+  y2: z.number().optional(),
+  points: z.array(z.tuple([z.number(), z.number()])).optional().describe('For polygon'),
 });
 
 const text = (body: string) => ({ content: [{ type: 'text' as const, text: body }] });
@@ -696,6 +717,54 @@ export function createServer({ projectRoot }: ServerOptions): McpServer {
     async ({ tests }) => {
       const report = await runTests(requireLive(), tests as GmTestSpec[]);
       return text(formatReport(report));
+    },
+  );
+
+  server.registerTool(
+    'gml_create_sprite',
+    {
+      description:
+        'Create a sprite from shapes. Each frame is a list of shapes drawn in order onto a ' +
+        'transparent canvas, so this covers placeholder art, icons, simple animation and ' +
+        'debug markers without an image file. Coordinates are in pixels from the top left.',
+      inputSchema: {
+        name: z.string().describe('Resource name, e.g. spr_player'),
+        width: z.number().int().min(1).max(4096),
+        height: z.number().int().min(1).max(4096),
+        frames: z
+          .array(z.object({ shapes: z.array(ShapeSchema) }))
+          .min(1)
+          .describe('One entry per animation frame'),
+        background: z.string().optional().describe('Canvas colour before drawing; default transparent'),
+        origin: z
+          .enum([
+            'topLeft', 'topCentre', 'topRight',
+            'middleLeft', 'middleCentre', 'middleRight',
+            'bottomLeft', 'bottomCentre', 'bottomRight',
+          ])
+          .optional(),
+        collisionKind: z.number().int().optional().describe('0 precise, 1 rectangle, 2 ellipse, 3 diamond'),
+        playbackSpeed: z.number().optional().describe('Animation frames per second'),
+        folder: z.string().optional(),
+      },
+    },
+    async ({ name, width, height, frames, background, origin, collisionKind, playbackSpeed, folder }) => {
+      const current = project();
+      const canvases = frames.map((frame) =>
+        drawFrame(width, height, { shapes: frame.shapes as Shape[] }, background ?? 'transparent'),
+      );
+      const ref = current.transact(`create sprite ${name}`, (tx) =>
+        createSprite(current, tx, name, {
+          frames: canvases,
+          origin,
+          collisionKind,
+          playbackSpeed,
+          folder,
+        }),
+      );
+      return text(
+        `Created ${ref.name} (${width}x${height}, ${frames.length} frame${frames.length === 1 ? '' : 's'}) at ${ref.path}`,
+      );
     },
   );
 

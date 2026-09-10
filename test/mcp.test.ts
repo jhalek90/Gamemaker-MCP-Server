@@ -92,6 +92,7 @@ describe('mcp server', () => {
     expect(names).toContain('gml_compile');
     expect(names).toContain('gml_bridge');
     expect(names).toContain('gml_test');
+    expect(names).toContain('gml_create_sprite');
     for (const tool of tools) expect(tool.description, `${tool.name} needs a description`).toBeTruthy();
   });
 

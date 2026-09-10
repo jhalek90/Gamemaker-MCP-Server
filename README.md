@@ -44,7 +44,7 @@ IDE builds.
 | **M0** | `.yy` document model + corpus harness — done |
 | **M1a** | Transactional writes, shadow-git undo — done |
 | **M1b** | `.yyp` graph, resource CRUD, folders, events — done |
-| M1c | GML symbol index; sprite creation once an image pipeline exists |
+| **M1c** | GML symbol index, sprite creation from shapes — done |
 | **M2** | `GmlSpec.xml` knowledge base, hallucination checker, MCP server — done |
 | **M3** | Igor probe layer, `gml_compile`, isolated build cache — done |
 | **M4** | Injectable GML bridge: TCP, screenshots, state introspection — done |
@@ -119,6 +119,7 @@ Register it with an MCP client (Claude Code shown):
 | `gml_compile` | Compile with GameMaker; errors located to file and line |
 | `gml_project_info`, `gml_list_resources`, `gml_read`, `gml_list_events` | Read the project |
 | `gml_create_object`, `gml_create_script`, `gml_create_folder` | Add resources |
+| `gml_create_sprite` | Build a sprite from shapes, no image file needed |
 | `gml_set_event`, `gml_remove_event` | Write gameplay logic |
 | `gml_set_sprite_properties`, `gml_rename_resource`, `gml_delete_resource` | Edit and remove |
 | `gml_bridge`, `gml_add_room_instance` | Install the in-game bridge and place it |
@@ -398,12 +399,50 @@ other object — `Collision_objWall.gml` — not a number.
 
 ### Sprites
 
-Sprite properties (`origin`, `bboxMode`, `collisionKind`, the bbox) are
-editable. Sprite *creation* is deliberately absent: it needs frame and layer
-GUIDs, PNGs written to two locations, and a large `sequence` block — 3KB of
-`.yy` for a single-frame sprite — and there is no way to exercise that end to
-end until there is an image pipeline feeding it. When it lands, cloning an
-existing sprite's structure will beat synthesizing the `sequence` block.
+Sprites are created from shapes, with no image file and no dependency:
+
+```ts
+const ball = new Canvas(64, 64)
+  .circle(32, 32, 30, '#e6194b')
+  .circle(24, 24, 9, '#ffffffcc');
+
+createSprite(project, tx, 'spr_ball', { frames: [ball], origin: 'middleCentre' });
+```
+
+Over MCP the same thing is described as data, since an agent cannot hand a
+drawing callback across the boundary:
+
+```json
+{
+  "name": "spr_ball", "width": 64, "height": 64, "origin": "middleCentre",
+  "frames": [{ "shapes": [
+    { "type": "circle", "x": 32, "y": 32, "radius": 30, "colour": "#e6194b" },
+    { "type": "circle", "x": 24, "y": 24, "radius": 9, "colour": "#ffffffcc" }
+  ]}]
+}
+```
+
+Shapes are `fill`, `rect`, `circle`, `ellipse`, `polygon` and `line`, filled
+or outlined, composited with alpha. Curves are anti-aliased by coverage
+sampling; `antialias: false` gives the hard edges pixel art wants. Multiple
+frames make an animation.
+
+The PNG encoder is about eighty lines over Node's `zlib` — chunk framing and
+a CRC — rather than an image dependency. Tests decode it again and compare
+pixels, so the encoder is checked end to end.
+
+**The structure was measured, not guessed.** A sprite needs frame and layer
+GUIDs, the image written to two places, and a `sequence` block whose keyframes
+reference frames by id. Comparing a one-frame sprite against a three-frame one
+showed they differ only in `sequence.length` and the number of keyframes,
+which is what made generating them safe. Floats are emitted as floats
+(`"opacity":100.0`), or GameMaker would rewrite the file on its next save. The
+bounding box is measured from actual pixel alpha, which is what `bboxMode: 0`
+means.
+
+Verified the only way that counts: four generated sprites compiled, loaded and
+drew in a running game, with GameMaker reporting back `64x64`, `origin 32,32`
+and `frames: 3`. Run `npx tsx tools/sprite-demo.mts` to see it.
 
 ## The `.yy` format, as measured
 

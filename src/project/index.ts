@@ -6,3 +6,5 @@ export { createObject, createScript, addEvent, removeEvent, listEvents, deleteRe
 export type { CreateObjectOptions, DeleteOptions, SpriteProperties } from './resources.js';
 export { ProjectSymbols, checkGml, checkProject, stripCommentsAndStrings, gmlFiles } from './symbols.js';
 export type { Diagnostic, SymbolDefinition } from './symbols.js';
+export { createSprite, originPixels, ORIGINS } from './sprites.js';
+export type { CreateSpriteOptions, OriginName } from './sprites.js';

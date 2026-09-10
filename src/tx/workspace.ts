@@ -33,8 +33,8 @@ export interface CommitResult {
   deleted: string[];
 }
 
-/** `null` marks a deletion. */
-type PendingWrite = string | null;
+/** `null` marks a deletion; a Buffer marks binary content such as a PNG. */
+type PendingWrite = string | Buffer | null;
 
 export class Transaction {
   private readonly pending = new Map<string, PendingWrite>();
@@ -55,6 +55,11 @@ export class Transaction {
     return this.stage(path, doc.text);
   }
 
+  /** Queue a binary file write — sprite frames, and anything else not text. */
+  writeBinary(path: string, data: Buffer): this {
+    return this.stage(path, data);
+  }
+
   /** Queue a file deletion. */
   delete(path: string): this {
     return this.stage(path, null);
@@ -66,9 +71,25 @@ export class Transaction {
    */
   read(path: string): string | undefined {
     const key = this.workspace.normalize(path);
-    if (this.pending.has(key)) return this.pending.get(key) ?? undefined;
+    if (this.pending.has(key)) {
+      const pending = this.pending.get(key);
+      if (pending === null || pending === undefined) return undefined;
+      return typeof pending === 'string' ? pending : pending.toString('utf8');
+    }
     const absolute = this.workspace.resolve(key);
     return existsSync(absolute) ? readFileSync(absolute, 'utf8') : undefined;
+  }
+
+  /** Read a file as bytes, through pending writes. */
+  readBinary(path: string): Buffer | undefined {
+    const key = this.workspace.normalize(path);
+    if (this.pending.has(key)) {
+      const pending = this.pending.get(key);
+      if (pending === null || pending === undefined) return undefined;
+      return typeof pending === 'string' ? Buffer.from(pending, 'utf8') : pending;
+    }
+    const absolute = this.workspace.resolve(key);
+    return existsSync(absolute) ? readFileSync(absolute) : undefined;
   }
 
   /** Read a `.yy` file as a document, through pending writes. */
@@ -131,7 +152,8 @@ export class Transaction {
           deleted.push(path);
         } else {
           mkdirSync(dirname(absolute), { recursive: true });
-          writeFileSync(absolute, content, 'utf8');
+          if (typeof content === 'string') writeFileSync(absolute, content, 'utf8');
+          else writeFileSync(absolute, content);
           written.push(path);
         }
       }
@@ -165,7 +187,7 @@ export class Transaction {
    */
   private validate(): void {
     for (const [path, content] of this.pending) {
-      if (content === null) continue;
+      if (content === null || typeof content !== 'string') continue;
       if (!/\.(yy|yyp)$/i.test(path)) continue;
       if (!isYyDocument(content)) {
         throw new TransactionError('Refusing to write a non-JSON .yy container', path);
