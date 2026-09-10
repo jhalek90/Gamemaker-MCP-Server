@@ -1,0 +1,10 @@
+{
+  "$GMScript":"v1",
+  "%Name":"scr_dm_engine",
+  "isCompatibility":false,
+  "isDnD":false,
+  "name":"scr_dm_engine",
+  "parent":{"name":"Doom","path":"folders/Doom.yy",},
+  "resourceType":"GMScript",
+  "resourceVersion":"2.0",
+}

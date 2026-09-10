@@ -1,15 +1,17 @@
 draw_set_colour(c_black);
-draw_text(40, 40, "sprites built from shapes, drawn by GameMaker");
+draw_text(40, 24, "spr_bounce: " + string(sprite_get_number(spr_bounce)) + " frames, "
+	+ string(sprite_get_width(spr_bounce)) + "x" + string(sprite_get_height(spr_bounce))
+	+ ", origin " + string(sprite_get_xoffset(spr_bounce)) + "," + string(sprite_get_yoffset(spr_bounce)));
 
-draw_sprite(spr_ball, 0, 120, 140);
-draw_sprite(spr_crate, 0, 200, 110);
-draw_sprite(spr_arrow, 0, 340, 140);
-
-draw_text(40, 220, "spr_pulse, all three frames:");
-for (var _i = 0; _i < sprite_get_number(spr_pulse); _i++) {
-	draw_sprite(spr_pulse, _i, 60 + _i * 80, 250);
+// Every frame, laid out as GameMaker sees them.
+for (var _i = 0; _i < sprite_get_number(spr_bounce); _i++) {
+	draw_sprite(spr_bounce, _i, 70 + (_i mod 8) * 100, 100 + (_i div 8) * 105);
 }
 
-draw_text(40, 340, "sizes: " + string(sprite_get_width(spr_ball)) + "x" + string(sprite_get_height(spr_ball))
-	+ "   origin: " + string(sprite_get_xoffset(spr_ball)) + "," + string(sprite_get_yoffset(spr_ball))
-	+ "   frames: " + string(sprite_get_number(spr_pulse)));
+// And the animation actually playing, at three sizes.
+var _f = (current_time div 62) mod sprite_get_number(spr_bounce);
+draw_text(40, 330, "playing:");
+draw_sprite_ext(spr_bounce, _f, 120, 420, 1, 1, 0, c_white, 1);
+draw_sprite_ext(spr_bounce, _f, 260, 420, 2, 2, 0, c_white, 1);
+draw_sprite_ext(spr_bounce, _f, 460, 420, 3, 3, 0, c_white, 1);
+draw_text(40, 560, "frame " + string(_f));
