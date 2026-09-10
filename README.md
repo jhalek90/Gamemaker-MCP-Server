@@ -4,9 +4,9 @@ An MCP server for GameMaker — giving AI agents a real connection to the engine
 faithful project editing, a compile loop, and live introspection of a running
 game.
 
-Status: **M2 complete — the server runs.** An agent can search the GML API,
-check its own code for invented functions, and edit a project through
-transactional tools with undo.
+Status: **M3 complete — the loop closes.** An agent can search the GML API,
+check its own code for invented functions, edit a project through
+transactional tools with undo, and compile to find out whether it worked.
 
 ## Why this exists
 
@@ -46,7 +46,7 @@ IDE builds.
 | **M1b** | `.yyp` graph, resource CRUD, folders, events — done |
 | M1c | GML symbol index; sprite creation once an image pipeline exists |
 | **M2** | `GmlSpec.xml` knowledge base, hallucination checker, MCP server — done |
-| M3 | Igor discovery + probe layer, `compile_check`, isolated build cache |
+| **M3** | Igor probe layer, `gml_compile`, isolated build cache — done |
 | M4 | Injectable GML bridge: TCP, screenshots, state introspection |
 | M5 | Live tunables, seeded input, GML test runner |
 
@@ -116,6 +116,7 @@ Register it with an MCP client (Claude Code shown):
 | `gml_search` | Find GML functions by name or description |
 | `gml_lookup` | Full signature, parameter types and docs for one identifier |
 | `gml_check` | Report calls to functions that exist nowhere |
+| `gml_compile` | Compile with GameMaker; errors located to file and line |
 | `gml_project_info`, `gml_list_resources`, `gml_read`, `gml_list_events` | Read the project |
 | `gml_create_object`, `gml_create_script`, `gml_create_folder` | Add resources |
 | `gml_set_event`, `gml_remove_event` | Write gameplay logic |
@@ -124,6 +125,58 @@ Register it with an MCP client (Claude Code shown):
 
 Every mutation is one transaction with a named restore point, so `gml_undo`
 reverses whole operations rather than individual file writes.
+
+## Compiling
+
+```
+Build succeeded in 2.6s (VM).
+Compiled cleanly.
+
+Build FAILED in 1.2s (exit 1).
+objects/objCar/Step_0.gml:10  error: unexpected symbol ";" in expression
+objects/objCar/Step_0.gml:10  error: malformed assignment statement
+```
+
+A small project compiles in about **3 seconds**, which is fast enough to sit
+inside an edit loop.
+
+Igor's CLI is undocumented and shifts between releases, so it was probed
+rather than assumed. Three findings shaped the implementation:
+
+**`windows Package` does not compile.** It exits 0 with a syntax error present
+and produces no output. `windows PackageZip` is the cheapest command that
+actually invokes the asset compiler.
+
+**Compiler line numbers are zero-based.** An error on the first line of a file
+reports `(0)`. Verified by planting errors at known positions — line 1 reports
+0, line 3 reports 2, independent of line endings. We add one, so locations
+match every editor and match `gml_check`. Getting this wrong would send an
+agent editing the line above the mistake.
+
+**Errors name compiler scripts, not files.** `gml_Object_objCar_Step_0(9)` has
+to be mapped back to `objects/objCar/Step_0.gml`, and that needs the project's
+resource list: object names and event names both contain underscores, so
+`gml_Object_obj_my_thing_Step_0` cannot be split without knowing which objects
+exist. Errors inside script functions resolve through the symbol index.
+
+Builds use a cache and temp directory under `.gml-mcp/build/`, never the
+IDE's. Sharing them would make agent builds and IDE builds collide.
+
+### The compiler and the checker catch different things
+
+`gml_check` is not made redundant by compiling. GameMaker resolves function
+names at **runtime**, so calls to functions that do not exist compile
+perfectly:
+
+```gml
+var q = totally_made_up_function(1, 2);
+another_fake_one();
+draw_sprite_ex_ext_bogus(0, 0, 0);
+```
+
+That file builds clean, exit 0, zero errors — and then crashes when the code
+runs. The compiler catches syntax and structure; the checker catches invented
+names. Run both.
 
 ## Grounding, not preloading
 

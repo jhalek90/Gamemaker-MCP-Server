@@ -34,6 +34,7 @@ import {
   type Diagnostic,
   type GmEvent,
 } from '../project/index.js';
+import { formatBuildDiagnostics, IgorRunner } from '../build/index.js';
 import { GmlSpec, requireRuntime, signatureOf, summarize, type GmlEntry } from '../spec/index.js';
 
 const EventSchema = z.object({
@@ -400,6 +401,35 @@ export function createServer({ projectRoot }: ServerOptions): McpServer {
       const current = project();
       current.transact(`delete ${name}`, (tx) => deleteResource(current, tx, name, { force }));
       return text(`Deleted ${name}`);
+    },
+  );
+
+  server.registerTool(
+    'gml_compile',
+    {
+      description:
+        'Compile the project with GameMaker and report any errors, located to file and line. ' +
+        'A small project compiles in a few seconds. Run this after a set of edits to confirm ' +
+        'the project still builds — it catches syntax and structural errors that gml_check ' +
+        'cannot, while gml_check catches calls to functions that do not exist, which the ' +
+        'compiler resolves at runtime and therefore does not report.',
+      inputSchema: {
+        config: z.string().optional().describe('Project config to build; defaults to Default'),
+        target: z.enum(['VM', 'YYC']).default('VM').describe('VM is much faster and needs no Visual Studio'),
+        ignoreCache: z.boolean().default(false).describe('Discard the build cache; slower but rules out stale results'),
+      },
+    },
+    async ({ config, target, ignoreCache }) => {
+      const runner = IgorRunner.create(project());
+      const result = await runner.compile({ config, target, ignoreCache });
+      const seconds = (result.durationMs / 1000).toFixed(1);
+      if (result.timedOut) {
+        return text(`Build timed out after ${seconds}s.\n${formatBuildDiagnostics(result.diagnostics)}`);
+      }
+      const heading = result.ok
+        ? `Build succeeded in ${seconds}s (${target}).`
+        : `Build FAILED in ${seconds}s (exit ${result.exitCode}).`;
+      return text(`${heading}\n${formatBuildDiagnostics(result.diagnostics)}`);
     },
   );
 

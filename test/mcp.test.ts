@@ -89,6 +89,7 @@ describe('mcp server', () => {
     expect(names).toContain('gml_create_object');
     expect(names).toContain('gml_set_event');
     expect(names).toContain('gml_undo');
+    expect(names).toContain('gml_compile');
     for (const tool of tools) expect(tool.description, `${tool.name} needs a description`).toBeTruthy();
   });
 
