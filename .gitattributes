@@ -1,0 +1,14 @@
+# GameMaker project files are byte-sensitive — this whole project exists to
+# avoid rewriting them, so git must not rewrite them either. Without this,
+# core.autocrlf on a Windows clone would hand every contributor a set of .yy
+# files that differ from what the server actually wrote.
+*.yy              text eol=lf
+*.yyp             text eol=lf
+*.gml             text eol=lf
+*.resource_order  text eol=lf
+
+# Generated project files are noise in diffs and in language statistics.
+*.yy              linguist-generated=true
+*.yyp             linguist-generated=true
+
+*.png             binary
