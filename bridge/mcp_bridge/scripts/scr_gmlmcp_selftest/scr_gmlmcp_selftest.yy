@@ -1,0 +1,10 @@
+{
+  "$GMScript":"v1",
+  "%Name":"scr_gmlmcp_selftest",
+  "isCompatibility":false,
+  "isDnD":false,
+  "name":"scr_gmlmcp_selftest",
+  "parent":{"name":"mcp_bridge","path":"mcp_bridge.yyp",},
+  "resourceType":"GMScript",
+  "resourceVersion":"2.0",
+}

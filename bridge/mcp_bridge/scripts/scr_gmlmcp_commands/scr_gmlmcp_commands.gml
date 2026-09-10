@@ -17,8 +17,82 @@ function gmlmcp_dispatch(_command, _args, _socket, _id) {
 		case "speed":      return gmlmcp_cmd_speed(_args);
 		case "tunables":   return gmlmcp_cmd_tunables(_args);
 		case "screenshot": return gmlmcp_cmd_screenshot(_args, _socket, _id);
+		case "seed":       return gmlmcp_cmd_seed(_args);
+		case "input":      return gmlmcp_cmd_input(_args);
+		case "wait":       return gmlmcp_cmd_wait(_args, _socket, _id);
 		default: throw "unknown command: " + string(_command);
 	}
+}
+
+/// @desc Fix the random sequence so a run can be repeated exactly.
+///
+/// Without this a test that depends on any randomness is not a test.
+function gmlmcp_cmd_seed(_args) {
+	var _seed = _args[$ "seed"];
+	if (is_undefined(_seed)) return { seed: random_get_seed() };
+	random_set_seed(_seed);
+	return { seed: random_get_seed() };
+}
+
+/// @desc Resolve a key name to the code GameMaker uses.
+///
+/// Accepts a raw code, a single character, or a vk_ name. The lookup is a
+/// struct of the real constants, so the compiler checks every one of them.
+function gmlmcp_key_code(_key) {
+	if (is_real(_key)) return _key;
+	var _name = string_lower(string(_key));
+	if (string_length(_name) == 1) return ord(string_upper(_name));
+
+	static _codes = {
+		vk_left: vk_left, vk_right: vk_right, vk_up: vk_up, vk_down: vk_down,
+		vk_enter: vk_enter, vk_escape: vk_escape, vk_space: vk_space,
+		vk_shift: vk_shift, vk_control: vk_control, vk_alt: vk_alt,
+		vk_tab: vk_tab, vk_backspace: vk_backspace, vk_delete: vk_delete,
+		vk_insert: vk_insert, vk_home: vk_home, vk_end: vk_end,
+		vk_pageup: vk_pageup, vk_pagedown: vk_pagedown,
+		vk_f1: vk_f1, vk_f2: vk_f2, vk_f3: vk_f3, vk_f4: vk_f4,
+		vk_f5: vk_f5, vk_f6: vk_f6, vk_f7: vk_f7, vk_f8: vk_f8,
+	};
+	if (variable_struct_exists(_codes, _name)) return _codes[$ _name];
+	throw "unknown key: " + string(_key);
+}
+
+/// @desc Simulate keyboard input.
+///
+/// keyboard_key_press and keyboard_key_release drive the same state the game
+/// reads through keyboard_check, so scripted input is indistinguishable from
+/// a person at the keyboard.
+function gmlmcp_cmd_input(_args) {
+	if (_args[$ "clear"] == true) io_clear();
+
+	var _press = _args[$ "press"];
+	if (!is_undefined(_press)) {
+		var _down = is_array(_press) ? _press : [_press];
+		for (var _i = 0; _i < array_length(_down); _i++) {
+			keyboard_key_press(gmlmcp_key_code(_down[_i]));
+		}
+	}
+
+	var _release = _args[$ "release"];
+	if (!is_undefined(_release)) {
+		var _up = is_array(_release) ? _release : [_release];
+		for (var _j = 0; _j < array_length(_up); _j++) {
+			keyboard_key_release(gmlmcp_key_code(_up[_j]));
+		}
+	}
+	return { pressed: _press ?? [], released: _release ?? [] };
+}
+
+/// @desc Let the game run for a number of frames, then reply.
+///
+/// Combined with a raised game speed this is how a test simulates seconds of
+/// play in a fraction of the wall clock.
+function gmlmcp_cmd_wait(_args, _socket, _id) {
+	var _frames = max(1, _args[$ "frames"] ?? 1);
+	with (obj_gmlmcp_bridge) {
+		array_push(waits, { socket: _socket, id: _id, until: frames + _frames });
+	}
+	return GMLMCP_DEFERRED;
 }
 
 function gmlmcp_cmd_ping() {
@@ -28,6 +102,8 @@ function gmlmcp_cmd_ping() {
 		room: room_get_name(room),
 		fps: fps,
 		speed: game_get_speed(gamespeed_fps),
+		frames: obj_gmlmcp_bridge.frames,
+		seed: random_get_seed(),
 	};
 }
 

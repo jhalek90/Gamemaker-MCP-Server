@@ -24,6 +24,7 @@
     {"id":{"name":"Room1","path":"rooms/Room1/Room1.yy",},},
     {"id":{"name":"scr_gmlmcp_commands","path":"scripts/scr_gmlmcp_commands/scr_gmlmcp_commands.yy",},},
     {"id":{"name":"scr_gmlmcp_protocol","path":"scripts/scr_gmlmcp_protocol/scr_gmlmcp_protocol.yy",},},
+    {"id":{"name":"scr_gmlmcp_selftest","path":"scripts/scr_gmlmcp_selftest/scr_gmlmcp_selftest.yy",},},
   ],
   "resourceType":"GMProject",
   "resourceVersion":"2.0",

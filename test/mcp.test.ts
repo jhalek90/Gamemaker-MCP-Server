@@ -90,6 +90,8 @@ describe('mcp server', () => {
     expect(names).toContain('gml_set_event');
     expect(names).toContain('gml_undo');
     expect(names).toContain('gml_compile');
+    expect(names).toContain('gml_bridge');
+    expect(names).toContain('gml_test');
     for (const tool of tools) expect(tool.description, `${tool.name} needs a description`).toBeTruthy();
   });
 

@@ -37,12 +37,39 @@ import {
 } from '../project/index.js';
 import { formatBuildDiagnostics, IgorRunner, type RunHandle } from '../build/index.js';
 import { BridgeClient, bridgeStatus, ejectBridge, injectBridge } from '../bridge/index.js';
+import { formatReport, runTests, type GmTestSpec } from '../testing/index.js';
 import { GmlSpec, requireRuntime, signatureOf, summarize, type GmlEntry } from '../spec/index.js';
 
 const EventSchema = z.object({
   type: z.number().int().describe('eventType: 0 Create, 2 Alarm, 3 Step, 4 Collision, 8 Draw, 9 KeyPress'),
   number: z.number().int().default(0).describe('eventNum: Step 0/1/2, Draw 0/64/72/73, alarm index, key code'),
   collisionWith: z.string().optional().describe('Other object name, required for collision events'),
+});
+
+const ExpectationSchema = z.object({
+  name: z.string().optional().describe('Variable to read'),
+  scope: z.string().optional().describe('"global", an object name, or an instance id'),
+  call: z.object({ function: z.string(), args: z.array(z.any()).optional() }).optional()
+    .describe('Call a function and check its result instead'),
+  instances: z.string().optional().describe('Count live instances of this object instead'),
+  op: z.enum(['==', '!=', '>', '>=', '<', '<=', 'contains', 'exists']).optional(),
+  value: z.any().optional(),
+  tolerance: z.number().optional().describe('Allowed numeric difference; physics is rarely exact'),
+  because: z.string().optional().describe('Message to show if this fails'),
+});
+
+const StepSchema = z.object({
+  seed: z.number().optional(),
+  speed: z.number().optional().describe('Frames per second; raise it to simulate faster than real time'),
+  set: z.object({ name: z.string(), value: z.any(), scope: z.string().optional() }).optional(),
+  press: z.union([z.string(), z.array(z.string())]).optional().describe('Key name, e.g. vk_right or "a"'),
+  release: z.union([z.string(), z.array(z.string())]).optional(),
+  clearInput: z.boolean().optional(),
+  wait: z.number().int().optional().describe('Let the game run this many frames'),
+  call: z.object({ function: z.string(), args: z.array(z.any()).optional() }).optional(),
+  goto: z.string().optional().describe('Change to this room'),
+  screenshot: z.string().optional(),
+  expect: ExpectationSchema.optional(),
 });
 
 const text = (body: string) => ({ content: [{ type: 'text' as const, text: body }] });
@@ -642,6 +669,33 @@ export function createServer({ projectRoot }: ServerOptions): McpServer {
     async ({ set }) => {
       const result = await requireLive().request('tunables', set ? { set } : {});
       return text(JSON.stringify(result, null, 2));
+    },
+  );
+
+  server.registerTool(
+    'gml_test',
+    {
+      description:
+        'Run deterministic tests against the running game. Each test fixes the random seed, ' +
+        'delivers input on exact frames, and waits in frames rather than wall clock, so a run ' +
+        'repeats exactly. Raise speed to simulate seconds of play in a fraction of the time. ' +
+        'This verifies game LOGIC, which compiling cannot.',
+      inputSchema: {
+        tests: z
+          .array(
+            z.object({
+              name: z.string(),
+              seed: z.number().optional(),
+              speed: z.number().optional(),
+              steps: z.array(StepSchema),
+            }),
+          )
+          .describe('Tests to run, in order, against the already-running game'),
+      },
+    },
+    async ({ tests }) => {
+      const report = await runTests(requireLive(), tests as GmTestSpec[]);
+      return text(formatReport(report));
     },
   );
 

@@ -4,9 +4,9 @@ An MCP server for GameMaker — giving AI agents a real connection to the engine
 faithful project editing, a compile loop, and live introspection of a running
 game.
 
-Status: **M4 complete — the agent can see the game.** Search the GML API,
-check code for invented functions, edit a project transactionally with undo,
-compile, then run the game and inspect it live — including screenshots.
+Status: **All milestones complete.** Search the GML API, check code for
+invented functions, edit a project transactionally with undo, compile, run the
+game, watch it live, and verify its behaviour with deterministic tests.
 
 ## Why this exists
 
@@ -48,7 +48,7 @@ IDE builds.
 | **M2** | `GmlSpec.xml` knowledge base, hallucination checker, MCP server — done |
 | **M3** | Igor probe layer, `gml_compile`, isolated build cache — done |
 | **M4** | Injectable GML bridge: TCP, screenshots, state introspection — done |
-| M5 | Live tunables, seeded input, GML test runner |
+| **M5** | Live tunables, seeded input, deterministic test runner — done |
 
 ## Transactions and undo
 
@@ -125,6 +125,7 @@ Register it with an MCP client (Claude Code shown):
 | `gml_run`, `gml_stop` | Launch the game and connect to it |
 | `gml_screenshot` | Capture what the game is showing, as an image to read |
 | `gml_live_state`, `gml_live_var`, `gml_live_call`, `gml_tunables` | Inspect and steer the running game |
+| `gml_test` | Run deterministic tests against the running game |
 | `gml_undo`, `gml_history` | Step back through changes |
 
 Every mutation is one transaction with a named restore point, so `gml_undo`
@@ -185,6 +186,64 @@ On a connect event `async_load[? "id"]` is the *server* socket; the client is
 under `"socket"`. **Both `gml_check` and `gml_compile` passed the broken
 version** — every function existed and the syntax was fine. A fair reminder of
 where static checking stops, and why the bridge earns its place.
+
+## Testing game behaviour
+
+Compiling proves the code parses. `gml_check` proves the functions exist.
+Neither says whether the game *works*. `gml_test` runs deterministic tests
+against the running game:
+
+```json
+{
+  "name": "holding right moves the player",
+  "seed": 424242,
+  "speed": 2000,
+  "steps": [
+    { "set": { "scope": "objPlayer", "name": "x", "value": 100 } },
+    { "press": "vk_right" },
+    { "wait": 60 },
+    { "release": "vk_right" },
+    { "expect": { "scope": "objPlayer", "name": "x", "op": ">", "value": 100 } }
+  ]
+}
+```
+
+Tests are declarative rather than code, because an agent talks to this server
+over MCP and cannot ship a function across that boundary. Steps cover `seed`,
+`speed`, `set`, `press`/`release`, `wait`, `call`, `goto`, `screenshot` and
+`expect`; expectations read a variable, call a function, or count instances,
+and compare with `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains` or `exists`,
+with an optional `tolerance` because physics is rarely exact.
+
+**Determinism** comes from three things: a fixed random seed, input delivered
+on exact frames via `keyboard_key_press` (the same state the game reads
+through `keyboard_check`), and waits measured in frames rather than wall
+clock. Verified rather than asserted — seed 999 produced `738608` twice, and
+seed 1000 produced `359339`.
+
+**Speed** is the other half. Raising `game_set_speed` runs the simulation
+faster than real time: 120 frames that would take two seconds of play complete
+in about 130ms, so a suite finishes in under a second.
+
+```
+PASS  the same seed produces the same value  (8 frames, 150ms)
+PASS  waiting advances real frames  (131 frames, 130ms)
+PASS  the bridge object is alive and persistent  (6 frames, 117ms)
+FAIL  DELIBERATE FAILURE: this expectation is wrong on purpose  (6 frames, 117ms)
+      step 2: proving failures are reported
+
+5 passed, 2 failed in 0.8s
+```
+
+Run it with `npx tsx tools/test-demo.mts`. It includes tests that fail on
+purpose, because a runner that only ever reports success proves nothing.
+
+### The limit worth knowing
+
+The tuning loop is fast because live tunables need no recompile. Anything
+*structural* — new logic, a changed algorithm — still costs an edit, a
+three-second rebuild and a relaunch, because GML cannot evaluate new code in a
+running game. No amount of bridge work changes that.
 
 ## Compiling
 
