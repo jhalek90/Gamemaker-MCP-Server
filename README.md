@@ -1,115 +1,186 @@
-# GML_MCP
+# GameMaker MCP Server
 
-An MCP server for GameMaker — giving AI agents a real connection to the engine:
-faithful project editing, a compile loop, and live introspection of a running
-game.
+**Give an AI agent a real connection to GameMaker** — faithful project editing,
+a compile loop, and a live link into the running game.
 
-Status: **All milestones complete.** Search the GML API, check code for
-invented functions, edit a project transactionally with undo, compile, run the
-game, watch it live, and verify its behaviour with deterministic tests.
+![MCP](https://img.shields.io/badge/MCP-server-5b3df5)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3178c6)
+![Node](https://img.shields.io/badge/Node-22%2B-339933)
+![Tests](https://img.shields.io/badge/tests-191%20passing-2ea44f)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
-## Why this exists
-
-Agents writing GameMaker code today are working blind. They hallucinate GML
-functions, cannot tell whether their code compiles, cannot see what the game
-looks like, and cannot safely edit the project files that define rooms, objects
-and sprites. Every one of those is solvable now, without waiting for
-GameMaker's forthcoming IDE extension API.
-
-## Architecture
-
-A stable MCP tool surface over swappable drivers, so the IDE plugin can slot in
-later without a rewrite:
-
-```
-MCP tool layer        (stable — the only thing agents see)
-      |
-ProjectSource   <- FilesystemSource (today)  | IdePluginSource (later)
-RunTarget       <- IgorRunner (today)        | IdeDebugger (later)
-LiveSession     <- GmlBridge (today)         | IdeRuntimeAPI (later)
-KnowledgeBase   <- GmlSpec.xml + project index
-```
-
-Target workflow is **IDE open** — GameMaker detects disk changes and prompts to
-reload, so the agent assists while you work. That imposes three constraints:
-writes must be batched into one atomic burst (or the IDE prompts per file),
-edits must be surgical (unsaved editor buffers can be clobbered), and Igor
-builds must use a dedicated cache directory so agent builds never contend with
-IDE builds.
-
-## Milestones
+Agents writing GameMaker code today work blind. They invent GML functions that
+do not exist, cannot tell whether the code compiles, cannot see what the game
+looks like, and cannot safely touch the `.yy` files that define rooms, objects
+and sprites. All of that is solvable now, without waiting for GameMaker's
+forthcoming IDE extension API.
 
 | | |
 |---|---|
-| **M0** | `.yy` document model + corpus harness — done |
-| **M1a** | Transactional writes, shadow-git undo — done |
-| **M1b** | `.yyp` graph, resource CRUD, folders, events — done |
-| **M1c** | GML symbol index, sprite creation from shapes — done |
-| **M2** | `GmlSpec.xml` knowledge base, hallucination checker, MCP server — done |
-| **M3** | Igor probe layer, `gml_compile`, isolated build cache — done |
-| **M4** | Injectable GML bridge: TCP, screenshots, state introspection — done |
-| **M5** | Live tunables, seeded input, deterministic test runner — done |
+| ![Raycaster corridor](docs/images/doom-corridor.png) | ![Platformer jump](docs/images/platformer-jump.png) |
 
-## Transactions and undo
+Both of those are games the server built — sprites, objects, events, rooms and
+all — then compiled, launched, played and photographed. No imported assets, no
+hand-edited files.
 
-Every write goes through a transaction. It collects the whole change set,
-validates it, snapshots the current state, then flushes in one burst:
+---
 
-```ts
-const workspace = Workspace.open(projectRoot);
-const tx = workspace.begin('add obj_bridge');
+## Contents
 
-const car = tx.readDoc('objects/objCar/objCar.yy')!;  // reads through pending writes
-car.set(['persistent'], true);
-tx.writeDoc('objects/objCar/objCar.yy', car);
-tx.write('objects/obj_bridge/Create_0.gml', 'server = network_create_server_raw(...);');
+- [What it does](#what-it-does)
+- [See it work](#see-it-work)
+- [Quick start](#quick-start)
+- [Tools](#tools)
+- [The live bridge](#the-live-bridge)
+- [The document model](#the-document-model)
+- [Transactions and undo](#transactions-and-undo)
+- [Rooms](#rooms)
+- [Testing game behaviour](#testing-game-behaviour)
+- [Compiling](#compiling)
+- [Grounding, not preloading](#grounding-not-preloading)
+- [What was measured](#what-was-measured)
+- [Development](#development)
+- [Prior art and attribution](#prior-art-and-attribution)
+- [Licence](#licence)
 
-tx.commit();     // validate -> snapshot -> apply, or roll back
-workspace.undo(); // step back, repeatable
-```
+## What it does
 
-**Batching is correctness, not tidiness.** Creating one object touches the
-`.yy`, the `.yyp` resource list, `.resource_order` and each event `.gml`.
-Written one at a time with the IDE open, GameMaker prompts to reload after each
-and can reload a half-created resource.
+- **Knows the real GML API.** 2,354 functions read from your installed
+  runtime's `GmlSpec.xml` — search, signatures, and a checker that flags calls
+  to functions that exist nowhere.
+- **Edits projects without corrupting them.** A byte-splicing `.yy` document
+  model that preserves formatting exactly, validated against 35,917 real files.
+- **Every change is a transaction** with a named restore point and unlimited
+  undo, backed by a shadow git repo that never touches yours.
+- **Creates resources** — objects, scripts, sprites drawn from primitives,
+  folders, rooms with cameras, and instances placed in them.
+- **Compiles with GameMaker's own toolchain** and reports errors at file and
+  line.
+- **Talks to the running game** — read and write variables, call functions,
+  count instances, adjust tunables live, and take screenshots the agent can
+  look at.
+- **Runs deterministic behaviour tests** against that live game.
 
-**Validation runs before anything lands.** A `.yy` that does not re-parse is
-rejected with the whole change set, because a corrupt `.yy` stops GameMaker
-loading the project at all.
+Target workflow is **IDE open**: GameMaker notices disk changes and offers to
+reload, so the agent assists while you work.
 
-**Undo uses a shadow git repo** at `.gml-mcp/shadow.git`, with the project as
-its work tree. Deliberately not the user's own repository — running
-`git commit` inside someone's working tree while they have their own staged
-changes is a bad surprise, and stash collisions are worse. A separate GIT_DIR
-costs nothing, gives unlimited undo depth, and behaves identically whether or
-not the project is versioned. `core.autocrlf` is forced off: 39% of corpus
-files are CRLF and git would otherwise rewrite them on restore.
+## See it work
 
-Each transaction commits the state *before* it applies, so undo restores
-modified files, deletes files the transaction created, and brings back files it
-deleted.
+Two complete games, built end to end through the server. They exist to prove
+the loop closes — and they are the reason several bugs in the server itself
+were found.
 
-## Running it
+### A platformer
+
+<img src="docs/images/platformer-complete.png" width="49%"> <img src="docs/images/platformer-brick.png" width="49%">
+
+80×12 tiles, 13 sprites, 15 objects, 211 instances. Coins, patrolling enemies
+you stomp, pits, bonus blocks, a mushroom that makes you big, bricks only big
+Mario can smash, and a flagpole. Coyote time and a jump buffer, because a
+platformer that ignores your input feels broken.
+
+An autopilot plays it start to finish over the bridge — **11 coins, 4600
+points, reaches the flag** — and eight declarative specs cover the mechanics.
 
 ```sh
-npm install && npm run build
-node dist/mcp/cli.js --project path/to/YourGame
+npx tsx tools/platformer/build.mts --compile   # build it
+npx tsx tools/platformer/specs.mts             # 8 behaviour specs
+npx tsx tools/platformer/playtest.mts          # autopilot, start to flag
 ```
 
-Register it with an MCP client (Claude Code shown):
+### A raycaster
+
+<img src="docs/images/doom-firefight.png" width="49%"> <img src="docs/images/doom-complete.png" width="49%">
+
+32×24 cells, 11 sprites, 15 objects, 292 instances. Textured DDA raycasting at
+**683 rays a frame and 120 fps**, distance shading, sliding doors, billboarded
+enemies clipped per column against the wall depths, a hitscan shotgun, a status
+bar with a face that gets bloodier, and an automap.
+
+Walls are real instances, and the collision grid is rebuilt from whatever
+instances exist at room start — so rearranging the level in GameMaker's room
+editor genuinely changes the level. A bot walks the 41-cell route from spawn to
+exit.
+
+```sh
+npx tsx tools/doom/build.mts --compile
+npx tsx tools/doom/playtest.mts
+```
+
+### Every sprite is drawn from primitives
+
+No asset pipeline, no image files in. Rectangles, ellipses, polygons and lines
+into a hand-written PNG encoder.
+
+| | |
+|---|---|
+| ![Platformer sprites](docs/images/platformer-sprites.png) | ![Raycaster sprites](docs/images/doom-sprites.png) |
+
+Levels are ASCII maps, **checked before they are built**. The raycaster map is
+flood-filled from the player start — 504 of 504 floor cells and all 17 entities
+reachable. The platformer asserts that the three tiles of run-up before every
+pit are clear at head height. A level that cannot be finished is worse than one
+that looks wrong, and neither check needs the game to run.
+
+### What building them actually caught
+
+Every one of these compiled cleanly and passed the hallucination checker. Only
+playing found them.
+
+| Symptom | Cause |
+|---|---|
+| Walks into the first pit, but only after collecting a mushroom | Big Mario is two tiles tall and a platform sat exactly on his head — the collision cancelled every jump. Small Mario cleared it, so it hid until the power-up worked |
+| Camera pans only at 85% of the screen width | `hborder`/`vborder` transposed in the room's view object ([see below](#rooms)) |
+| Every jump a stunted hop | Press and hold sent as two requests; the variable-height cut clipped `vsp` on the frame between them |
+| Black screen, while the bot navigated, shot and won | `visible = false` on the object whose Draw GUI *is* the renderer — GameMaker skips every Draw event for an invisible instance |
+| Horizon pitched below the walls | Mouse look grabbed the window on launch and drifted `pitch`; it now waits for a click |
+
+The pattern is the same each time: the compiler proves the code parses, the
+checker proves the functions exist, and neither has any opinion about whether
+the game is playable. Screenshots and a bot that reports where it got stuck are
+what close that gap.
+
+## Quick start
+
+Requires Node 22+ and an installed GameMaker runtime.
+
+```sh
+git clone https://github.com/jhalek90/Gamemaker-MCP-Server
+cd Gamemaker-MCP-Server
+npm install && npm run build
+```
+
+Register it with an MCP client — Claude Code shown:
 
 ```json
 {
   "mcpServers": {
     "gml": {
       "command": "node",
-      "args": ["path/to/GML_MCP/dist/mcp/cli.js", "--project", "path/to/YourGame"]
+      "args": [
+        "path/to/Gamemaker-MCP-Server/dist/mcp/cli.js",
+        "--project",
+        "path/to/YourGame"
+      ]
     }
   }
 }
 ```
 
-### Tools
+Then ask for something. A first session usually looks like:
+
+```
+gml_project_info                    what am I looking at
+gml_search { query: "collision" }   what can GML actually do here
+gml_create_object { ... }           make something
+gml_check                           did I invent any functions
+gml_compile                         does GameMaker accept it
+gml_bridge { action: "inject" }     install the live link
+gml_run  ->  gml_screenshot         look at it
+gml_undo                            take it all back
+```
+
+## Tools
 
 | Tool | |
 |---|---|
@@ -119,6 +190,7 @@ Register it with an MCP client (Claude Code shown):
 | `gml_compile` | Compile with GameMaker; errors located to file and line |
 | `gml_project_info`, `gml_list_resources`, `gml_read`, `gml_list_events` | Read the project |
 | `gml_create_object`, `gml_create_script`, `gml_create_folder` | Add resources |
+| `gml_create_room` | Create a room, with a scrolling view and a place in the room order |
 | `gml_create_sprite` | Build a sprite from shapes, no image file needed |
 | `gml_set_event`, `gml_remove_event` | Write gameplay logic |
 | `gml_set_sprite_properties`, `gml_rename_resource`, `gml_delete_resource` | Edit and remove |
@@ -134,10 +206,22 @@ reverses whole operations rather than individual file writes.
 
 ## The live bridge
 
-The bridge is a real GameMaker project at `bridge/mcp_bridge` — openable,
+This is the part that turns a code generator into something that can actually
+see what it made.
+
+```
+  agent  ──MCP──▶  server  ──TCP 5959──▶  obj_gmlmcp_bridge  (inside your game)
+                                                │
+                          ping · get_var · set_var · instances · call
+                          create · destroy · goto_room · speed · seed
+                          input · wait · tunables · screenshot
+```
+
+The bridge is **a real GameMaker project** at `bridge/mcp_bridge` — openable,
 runnable and debuggable in the IDE, with Feather and breakpoints. Authoring it
 as escaped strings inside TypeScript would have made it miserable to iterate
-on, and this way our own `gml_compile` verifies the one piece of GML we ship.
+on, and this way the server's own `gml_compile` verifies the one piece of GML
+it ships.
 
 ```
 gml_bridge { action: "inject" }
@@ -149,27 +233,25 @@ gml_screenshot          ->  C:\Users\you\AppData\Local\YourGame\shot.png
 
 **Injection copies the GML, not the `.yy` files.** Resources are re-created
 through the normal project API so they adopt the target's own conventions —
-copying `.yy` files verbatim would push our authoring version's format into a
+copying `.yy` files verbatim would push the authoring version's format into a
 project on a different GameMaker release, the drift problem avoided everywhere
 else here. Ejecting restores the project **byte for byte**, which the
 transaction layer makes directly testable.
 
 **Protocol** is newline-delimited JSON over raw TCP, game as server on port
-5959. `json_stringify` escapes newlines inside strings, so a bare newline is
-an unambiguous frame terminator with no length prefix to keep in sync across
+5959. `json_stringify` escapes newlines inside strings, so a bare newline is an
+unambiguous frame terminator with no length prefix to keep in sync across
 partial reads. The greeting carries a protocol version, so a stale injected
 copy is caught on connect rather than mis-parsed.
 
 **GML has no `eval`.** The bridge cannot run code sent over the wire, so every
-capability is an explicit verb over named assets: `ping`, `get_var`,
-`set_var`, `instances`, `call`, `create`, `destroy`, `goto_room`, `speed`,
-`tunables`, `screenshot`. Anything genuinely new needs an edit and a
-recompile — about three seconds.
+capability is an explicit verb over named assets. Anything genuinely new needs
+an edit and a recompile — about three seconds.
 
 **Live tunables are the exception that makes tuning practical.** Game code
 registers values it wants adjustable; changing them takes effect immediately.
-Adjust, screenshot, look, adjust again — no recompile in the loop. That is the
-one thing a text-only agent cannot do at all.
+Adjust, screenshot, look, adjust again, with no recompile in the loop. That is
+the one thing a text-only agent cannot do at all.
 
 Screenshots are deferred to Post Draw, because `screen_save` captures the back
 buffer and an async event would catch a partly drawn frame.
@@ -184,13 +266,101 @@ network_send_raw() - can only be used on TCP sockets (not servers)
 ```
 
 On a connect event `async_load[? "id"]` is the *server* socket; the client is
-under `"socket"`. **Both `gml_check` and `gml_compile` passed the broken
+under `"socket"`. **Both the checker and the compiler passed the broken
 version** — every function existed and the syntax was fine. A fair reminder of
 where static checking stops, and why the bridge earns its place.
 
+## The document model
+
+`.yy` and `.yyp` files are JSON with a dialect of their own: trailing commas,
+no space after `:`, marker keys like `$GMObject` and `%Name`, and no trailing
+newline. Parse-and-re-serialize loses all of that.
+
+So nothing is ever re-serialized. Edits **splice bytes** into the original
+text, leaving every byte outside the edit untouched. Measured across a corpus
+of 35,917 real `.yy` files from 131 projects:
+
+| | |
+|---|---|
+| Byte-splice model | **0** parse failures, **0** splice failures |
+| Parse-and-re-serialize | **81.7%** of files come back different |
+
+Key ordering matters too. GameMaker sorts keys case-insensitively, but `_`
+sorts *above* every letter — implemented as a `_`→`|` substitution before
+comparison. That one detail is the difference between 453 ordering violations
+and 11,570 across 620,224 objects.
+
+## Transactions and undo
+
+Every write goes through a transaction. It collects the whole change set,
+validates it, snapshots the current state, then flushes in one burst:
+
+```ts
+const workspace = Workspace.open(projectRoot);
+const tx = workspace.begin('add obj_bridge');
+
+const car = tx.readDoc('objects/objCar/objCar.yy')!;  // reads through pending writes
+car.set(['persistent'], true);
+tx.writeDoc('objects/objCar/objCar.yy', car);
+tx.write('objects/obj_bridge/Create_0.gml', 'server = network_create_server_raw(...);');
+
+tx.commit();      // validate -> snapshot -> apply, or roll back
+workspace.undo(); // step back, repeatable
+```
+
+**Batching is correctness, not tidiness.** Creating one object touches the
+`.yy`, the `.yyp` resource list, `.resource_order` and each event `.gml`.
+Written one at a time with the IDE open, GameMaker prompts to reload after each
+and can reload a half-created resource.
+
+**Validation runs before anything lands.** A `.yy` that does not re-parse is
+rejected along with the whole change set, because a corrupt `.yy` stops
+GameMaker loading the project at all.
+
+**Undo uses a shadow git repo** at `.gml-mcp/shadow.git`, with the project as
+its work tree. Deliberately not your repository — running `git commit` inside
+someone's working tree while they have their own staged changes is a bad
+surprise, and stash collisions are worse. A separate `GIT_DIR` costs nothing,
+gives unlimited undo depth, and behaves identically whether or not the project
+is versioned. `core.autocrlf` is forced off: 39% of corpus files are CRLF and
+git would otherwise rewrite them on restore.
+
+## Rooms
+
+```ts
+createRoom(project, tx, 'rm_level1', {
+  width: 5120, height: 768,
+  background: '#5c94fc',
+  view: { width: 1366, height: 768 },
+  orderIndex: 0,               // 0 makes it the room the game starts in
+});
+addRoomInstance(project, tx, 'rm_level1', 'obj_player', { x: 160, y: 640 });
+```
+
+A new room gets the two layers GameMaker makes for a blank one: an instance
+layer at depth 0 and a background layer at depth 100.
+
+**Two prefix conventions collide inside a single view object**, and mixing them
+up is invisible until you play the game:
+
+| | |
+|---|---|
+| `wview` / `wport` | **width** — paired with `hview` / `hport` for height |
+| `hborder` / `hspeed` | **horizontal** — paired with `vborder` / `vspeed` for vertical |
+
+So `hview` is `768` on a 1366×768 view while `hborder` is the slack on the left
+and right. Reading the first pattern and applying it to the second put the
+camera's horizontal border into the vertical field, and the player reached 85%
+of the way across the screen before it panned. `test/rooms.test.ts` now asserts
+all four with distinct values so the pairs cannot be transposed again.
+
+**Room instance coordinates are floats.** GameMaker writes `"x":384.0` and
+`"imageSpeed":1.0`; emitting `384` and `1` would make the IDE rewrite every
+instance in the room on its next save.
+
 ## Testing game behaviour
 
-Compiling proves the code parses. `gml_check` proves the functions exist.
+Compiling proves the code parses. The checker proves the functions exist.
 Neither says whether the game *works*. `gml_test` runs deterministic tests
 against the running game:
 
@@ -213,31 +383,41 @@ Tests are declarative rather than code, because an agent talks to this server
 over MCP and cannot ship a function across that boundary. Steps cover `seed`,
 `speed`, `set`, `press`/`release`, `wait`, `call`, `goto`, `screenshot` and
 `expect`; expectations read a variable, call a function, or count instances,
-and compare with `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains` or `exists`,
-with an optional `tolerance` because physics is rarely exact.
+and compare with `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains` or `exists`, with
+an optional `tolerance` because physics is rarely exact.
 
-**Determinism** comes from three things: a fixed random seed, input delivered
-on exact frames via `keyboard_key_press` (the same state the game reads
-through `keyboard_check`), and waits measured in frames rather than wall
-clock. Verified rather than asserted — seed 999 produced `738608` twice, and
-seed 1000 produced `359339`.
+**Determinism** comes from a fixed random seed, input delivered on exact
+frames, and waits measured in frames rather than wall clock. Verified rather
+than asserted — seed 999 produced `738608` twice, seed 1000 produced `359339`,
+and a simulated `vk_right` moves a platformer character 160 → 293 over 25
+frames.
 
 **Speed** is the other half. Raising `game_set_speed` runs the simulation
 faster than real time: 120 frames that would take two seconds of play complete
-in about 130ms, so a suite finishes in under a second.
+in about 130ms.
 
 ```
-PASS  the same seed produces the same value  (8 frames, 150ms)
-PASS  waiting advances real frames  (131 frames, 130ms)
-PASS  the bridge object is alive and persistent  (6 frames, 117ms)
-FAIL  DELIBERATE FAILURE: this expectation is wrong on purpose  (6 frames, 117ms)
-      step 2: proving failures are reported
+PASS  big Mario smashes a brick with his head  (48 frames, 830ms)
+PASS  small Mario only nudges the same brick   (56 frames, 950ms)
+PASS  landing on a goomba flattens it          (97 frames, 1634ms)
+PASS  a pit is fatal                           (64 frames, 1084ms)
+PASS  touching the flag wins the level         (31 frames, 557ms)
 
-5 passed, 2 failed in 0.8s
+8 passed, 0 failed in 9.5s
 ```
 
-Run it with `npx tsx tools/test-demo.mts`. It includes tests that fail on
-purpose, because a runner that only ever reports success proves nothing.
+**An input seam is worth building into a game you want an agent to drive.**
+Both demos read every control as *the real keyboard OR a global*:
+
+```gml
+var _right = keyboard_check(vk_right) || keyboard_check(ord("D")) || global.bot_right;
+```
+
+A driver then says exactly what is held, for exactly how long, without racing
+whatever else has the keyboard. Jumps go through a one-shot request the game
+consumes — `bot_jump_once = 26` means *jump, and hold the button 26 frames* —
+so a single round trip describes a whole jump and a driver that forgets to
+clear a flag cannot jam the button down. A human playing notices nothing.
 
 ### The limit worth knowing
 
@@ -248,144 +428,55 @@ running game. No amount of bridge work changes that.
 
 ## Compiling
 
-```
-Build succeeded in 2.6s (VM).
-Compiled cleanly.
+`gml_compile` drives Igor, GameMaker's own build tool, into a dedicated cache
+directory so agent builds never contend with IDE builds.
 
-Build FAILED in 1.2s (exit 1).
-objects/objCar/Step_0.gml:10  error: unexpected symbol ";" in expression
-objects/objCar/Step_0.gml:10  error: malformed assignment statement
-```
+Igor is undocumented enough to be worth noting: `/h` crashes it, but running it
+with no arguments prints usage. Workers are lowercase (`windows`), and
+**`windows Package` does not compile** — it exits 0 with a syntax error
+present. `PackageZip` is the one that actually builds.
 
-A small project compiles in about **3 seconds**, which is fast enough to sit
-inside an edit loop.
-
-Igor's CLI is undocumented and shifts between releases, so it was probed
-rather than assumed. Three findings shaped the implementation:
-
-**`windows Package` does not compile.** It exits 0 with a syntax error present
-and produces no output. `windows PackageZip` is the cheapest command that
-actually invokes the asset compiler.
-
-**Compiler line numbers are zero-based.** An error on the first line of a file
-reports `(0)`. Verified by planting errors at known positions — line 1 reports
-0, line 3 reports 2, independent of line endings. We add one, so locations
-match every editor and match `gml_check`. Getting this wrong would send an
-agent editing the line above the mistake.
-
-**Errors name compiler scripts, not files.** `gml_Object_objCar_Step_0(9)` has
-to be mapped back to `objects/objCar/Step_0.gml`, and that needs the project's
-resource list: object names and event names both contain underscores, so
-`gml_Object_obj_my_thing_Step_0` cannot be split without knowing which objects
-exist. Errors inside script functions resolve through the symbol index.
-
-Builds use a cache and temp directory under `.gml-mcp/build/`, never the
-IDE's. Sharing them would make agent builds and IDE builds collide.
+Compiler error line numbers are **zero-based**; the diagnostics layer adds one
+so reported lines match what you see in an editor.
 
 ### The compiler and the checker catch different things
 
-`gml_check` is not made redundant by compiling. GameMaker resolves function
-names at **runtime**, so calls to functions that do not exist compile
-perfectly:
+Three invented function calls — plausible names, correct-looking arguments —
+compile cleanly and exit 0. GameMaker resolves unknown identifiers at runtime,
+so a typo becomes a crash when that line is finally reached, not a build error.
+`gml_check` reads the same `GmlSpec.xml` Feather uses and flags them before the
+build. Neither tool subsumes the other.
 
-```gml
-var q = totally_made_up_function(1, 2);
-another_fake_one();
-draw_sprite_ex_ext_bogus(0, 0, 0);
-```
-
-That file builds clean, exit 0, zero errors — and then crashes when the code
-runs. The compiler catches syntax and structure; the checker catches invented
-names. Run both.
+Corpus-tuned to keep false positives down: 3,126 → 309 across 15,952 `.gml`
+files, with 49 of 66 projects completely clean.
 
 ## Grounding, not preloading
 
-The GML reference is exposed through search and lookup rather than loaded into
-context. Measured on a real `GmlSpec.xml`:
+`GmlSpec.xml` is about a megabyte. Loading all 2,354 functions into context
+would cost tokens on every request to answer a question the agent has not asked
+yet. Instead the server indexes it and answers `gml_search` and `gml_lookup` on
+demand, with ranked search and Levenshtein suggestions for near misses.
 
-| Representation | ~tokens |
+The spec is read from **your** installed runtime, so signatures match the
+version you actually build with. It is never redistributed.
+
+## What was measured
+
+Nothing here was assumed where it could be counted.
+
+| | |
 |---|---|
-| Raw `GmlSpec.xml` | 368,000 |
-| Distilled to signatures + descriptions + parameter docs | 198,000 |
-| Signatures only | 39,000 |
-| Names only | 11,600 |
-| **One `gml_lookup` result** | **80–200** |
+| `.yy` corpus | 35,917 files, 131 projects |
+| Byte-splice fidelity | 0 failures, versus 81.7% drift for re-serialization |
+| Key sort rule | 453 violations versus 11,570, across 620,224 objects |
+| Event type table | derived from 4,975 objects, zero ambiguity |
+| Checker false positives | 3,126 → 309 across 15,952 `.gml` files |
+| GML functions indexed | 2,354 |
+| Test suite | 191 passing |
 
-Preloading would buy one saved round-trip at roughly a thousand times the
-cost, and would displace the project's own code — the thing the agent actually
-needs to reason about.
-
-But search alone cannot fix hallucination, because a confident agent never
-asks. So `gml_check` validates after the fact, and `gml_set_event` runs it
-automatically on the code it just wrote:
-
-```
-Wrote objects/objPlayer/Step_0.gml
-objects/objPlayer/Step_0.gml:2:1  Unknown function 'instance_create_layerr'
-  (did you mean instance_create_layer?)
-```
-
-The checker is tuned to be conservative — one that cries wolf teaches an agent
-to ignore its real findings. Measured across **15,952 `.gml` files in 66 real
-projects**, the false positives it surfaced drove four fixes: extension APIs
-(Steamworks alone declares hundreds of functions present in no `.gml` and no
-runtime spec), struct and constructor methods called bare by sibling methods,
-`#region` labels whose free text parsed as calls, and functions declared in
-the file being checked but not yet on disk. That took it from 3,126
-diagnostics to **309**, with 49 of 66 projects fully clean. Spot-checking the
-remainder found genuine dangling calls — functions invoked but defined nowhere.
-
-The spec is read from the user's own install, so it always matches the runtime
-they have, and nothing of GameMaker's documentation is redistributed.
-
-## Resources
-
-```ts
-const project = GmProject.open(root);
-
-project.transact('add an enemy', (tx) => {
-  createFolder(project, tx, 'Actors/Enemies');
-  createObject(project, tx, 'objSlime', {
-    folder: 'Actors/Enemies',
-    sprite: 'sprSlime',
-    events: [
-      { event: Events.create(), code: 'hp = 3;' },
-      { event: Events.collision('objBullet'), code: 'hp -= 1;' },
-    ],
-  });
-});
-
-renameResource(project, tx, 'sprSlime', 'sprBlob'); // rewrites every reference
-deleteResource(project, tx, 'sprBlob');             // refuses while referenced
-```
-
-Each operation stages into a transaction, so several compose into one atomic
-change set. A create touches the `.yy`, the `.yyp` `resources` array, and
-`.resource_order` when the project has one — older projects do, newer
-GameMaker versions dropped it, so it is written only when already present.
-
-**References are resolved structurally.** `spriteId`, `parentObjectId`,
-`collisionObjectId` and room instance `objectId` are all `{name, path}`
-objects, so a rename rewrites them by walking the document tree rather than
-by text substitution. Delete refuses while anything still points at the target
-unless forced. The `.yyp`'s own `resources`, `Folders` and `IncludedFiles`
-sections are excluded from that search: they catalogue resources rather than
-refer to them, and counting them would make every resource look permanently
-referenced.
-
-**New files copy the project's conventions instead of guessing.** GameMaker
-versions its `$GMType` marker keys per resource type and changes them over
-time — the same project can hold `"$GMScript":"v1"` and `"$GMObject":""`, and
-another uses `"$GMSprite":"v2"`. Rather than map IDE build numbers to tag
-values, a new resource reads the tag from a resource of the same kind already
-in the project.
-
-### Events
-
-The `eventType` to file-prefix table was derived from the corpus rather than
-from documentation: pairing `eventList` entries against sibling `.gml` files
-across **4,975 objects** produced exactly one prefix per type with no
-disagreements.
+The event-type table came from pairing `eventList` entries against sibling
+`.gml` files across every object in the corpus, which produced exactly one
+prefix per type with no disagreements:
 
 | | | | |
 |---|---|---|---|
@@ -397,85 +488,6 @@ Types 11 (Trigger, deprecated), 13 (Gesture) and 14 (PreCreate) never occurred
 and are marked unverified in the source. Collision events are named after the
 other object — `Collision_objWall.gml` — not a number.
 
-### Sprites
-
-Sprites are created from shapes, with no image file and no dependency:
-
-```ts
-const ball = new Canvas(64, 64)
-  .circle(32, 32, 30, '#e6194b')
-  .circle(24, 24, 9, '#ffffffcc');
-
-createSprite(project, tx, 'spr_ball', { frames: [ball], origin: 'middleCentre' });
-```
-
-Over MCP the same thing is described as data, since an agent cannot hand a
-drawing callback across the boundary:
-
-```json
-{
-  "name": "spr_ball", "width": 64, "height": 64, "origin": "middleCentre",
-  "frames": [{ "shapes": [
-    { "type": "circle", "x": 32, "y": 32, "radius": 30, "colour": "#e6194b" },
-    { "type": "circle", "x": 24, "y": 24, "radius": 9, "colour": "#ffffffcc" }
-  ]}]
-}
-```
-
-Shapes are `fill`, `rect`, `circle`, `ellipse`, `polygon` and `line`, filled
-or outlined, composited with alpha. Curves are anti-aliased by coverage
-sampling; `antialias: false` gives the hard edges pixel art wants. Multiple
-frames make an animation.
-
-The PNG encoder is about eighty lines over Node's `zlib` — chunk framing and
-a CRC — rather than an image dependency. Tests decode it again and compare
-pixels, so the encoder is checked end to end.
-
-**The structure was measured, not guessed.** A sprite needs frame and layer
-GUIDs, the image written to two places, and a `sequence` block whose keyframes
-reference frames by id. Comparing a one-frame sprite against a three-frame one
-showed they differ only in `sequence.length` and the number of keyframes,
-which is what made generating them safe. Floats are emitted as floats
-(`"opacity":100.0`), or GameMaker would rewrite the file on its next save. The
-bounding box is measured from actual pixel alpha, which is what `bboxMode: 0`
-means.
-
-Verified the only way that counts: four generated sprites compiled, loaded and
-drew in a running game, with GameMaker reporting back `64x64`, `origin 32,32`
-and `frames: 3`. Run `npx tsx tools/sprite-demo.mts` to see it.
-
-## The `.yy` format, as measured
-
-Findings from sweeping **35,917 real `.yy`/`.yyp` files** across 131 projects
-spanning many GameMaker releases. These drove the design.
-
-**Edits are byte splices, never re-serialization.** A full re-serializer,
-tuned against the corpus with a learned rule table, reaches only **81.7%
-byte-exact** on current-format files. The residue is not noise — it is genuine
-version drift. Stitch (`@bscotch/yy`), which takes the re-serialize approach,
-ends up hardcoding exceptions for the exact keys our sweep flagged as
-inconsistent (`Channels`, `ConfigValues`) and gating field renames on IDE build
-numbers (`$GMSound` v2 drops `bitRate`, renames `type` to `channelFormat`).
-That is a treadmill: every GameMaker release adds an entry, and every gap
-silently reformats a user's file.
-
-Splicing bytes is 100% faithful *by construction* and version-independent.
-Measured on the corpus: **0 parse failures, 0 splice failures.** It also keeps
-git diffs minimal, which matters when the IDE is open and when a human is
-reviewing what the agent did.
-
-Other measured details, each of which would have broken a naive implementation:
-
-| Finding | Consequence |
-|---|---|
-| 14,162 of 35,917 files use **CRLF**; 68 carry a **BOM**; none end with a newline | Preserve per-file; never normalize |
-| Numbers carry meaningful precision — `"imageSpeed":1.0` | Scalars keep verbatim source text. `JSON.parse`/`stringify` would rewrite every instance in every room |
-| Integers exceed `Number.MAX_SAFE_INTEGER` (`"targets":461609314234257646`) | Same — never round-trip through `Number` |
-| Font kerning tables use **numeric string keys** (`"100"`) | Never round-trip through a plain JS object, which reorders integer-like keys |
-| Keys are sorted case-insensitively, but `_` sorts **above** all letters — hence `"bboxMode"` before `"bbox_bottom"` | Verified on 620,224 objects: plain sort gives 11,570 violations, the `_`→`|` substitution gives 453 (99.93%). Needed only to place *inserted* keys; existing keys are never reordered |
-| Old format writes `": "`, current writes `":"`; old omits the final trailing comma | Read both. Insertion supplies the comma a final member never needed |
-| 29 files (`*.inherited.yy`, `*.Configs.yy`) are not JSON at all — `1.0.0←GUID\|{json}←GUID\|{json}` | Detected and rejected via `YyUnsupportedFormatError` rather than half-parsed |
-
 ## Development
 
 ```sh
@@ -483,26 +495,81 @@ npm install
 npm test
 
 # Two opt-in suites run against real data:
-GML_MCP_CORPUS=d:/gamedev npm test                  # format fidelity, 35,917 files
-GML_MCP_SAMPLE_PROJECT=path/to/project npm test     # resource ops on a real project
+GML_MCP_CORPUS=/path/to/projects npm test           # format fidelity
+GML_MCP_SAMPLE_PROJECT=/path/to/a/project npm test  # resource ops on a real project
 ```
 
-`test/corpus.test.ts` asserts that every file parses, reproduces byte-for-byte,
+`test/corpus.test.ts` asserts that every file parses, reproduces byte for byte,
 survives a scalar replacement without disturbing another byte, and returns to
 its original bytes after an insert/remove round trip.
 
-`tools/live-demo.mts` drives the whole thing through MCP against a copy of a
-real project: inject, place, check, compile, run, inspect, screenshot.
-`tools/bridge-smoke.mts` does the same against the bridge project itself.
-
 `test/integration.test.ts` copies a real project and runs the resource
 operations over it, checking that a create touches only the expected files and
-that undo restores every byte. It has been run against seven projects,
-including one using nested folders and one nearly empty.
+that undo restores every byte. It has been run against seven projects.
 
-## Prior art
+The demos double as end-to-end exercises of the whole server:
 
-[Stitch](https://github.com/bscotch/stitch) by Butterscotch Shenanigans —
-`@bscotch/yy` for project files, plus a GML parser and VS Code extension. Used
-as a reference, not a dependency; its version-gate table is a useful record of
-GameMaker's schema drift.
+```sh
+npx tsx tools/platformer/build.mts --compile
+npx tsx tools/platformer/specs.mts
+npx tsx tools/platformer/playtest.mts
+
+npx tsx tools/doom/build.mts --compile
+npx tsx tools/doom/playtest.mts
+```
+
+`tools/*/preview.mts` renders every sprite to a single sheet, so the art can be
+judged without launching anything.
+
+### Layout
+
+```
+src/yy/        byte-splicing .yy document model
+src/tx/        transactions, shadow-git undo
+src/project/   .yyp graph, resources, events, sprites, rooms, symbol index
+src/spec/      GmlSpec.xml knowledge base, runtime discovery
+src/build/     Igor driver and diagnostics
+src/bridge/    injection and the TCP client
+src/testing/   deterministic test runner
+src/image/     PNG encoder and rasteriser
+src/mcp/       the MCP server itself
+bridge/        the injectable GameMaker project
+tools/         demos, corpus measurement scripts
+```
+
+## Prior art and attribution
+
+Nothing here vendors or depends on third-party source. The runtime dependencies
+are the MCP SDK and Zod; everything else — the `.yy` parser, the PNG encoder,
+the rasteriser, the raycaster — is written for this project.
+
+**[Stitch](https://github.com/bscotch/stitch)** by Butterscotch Shenanigans
+(MIT, © 2023) — `@bscotch/yy` for project files, plus a GML parser and VS Code
+extension. Read as a reference, deliberately not a dependency: its model
+re-serializes `.yy` files where this one splices bytes, so depending on it
+would have imported the wrong architecture. Its version-gate table is a useful
+record of GameMaker's schema drift. No Stitch code is reproduced here.
+
+**Raycasting technique** — the demo in `tools/doom/` uses the grid traversal
+from Amanatides & Woo, *A Fast Voxel Traversal Algorithm for Ray Tracing*
+(1987), applied to a first-person view the way Wolfenstein 3D did and as set
+out in [Lode Vandevenne's raycasting
+tutorial](https://lodev.org/cgtutor/raycasting.html). That tutorial's source is
+*"Copyright (c) 2004-2020 by Lode Vandevenne. All rights reserved."* with no
+licence grant, so none of it is copied: the GML is written from the published
+technique. The credit is owed regardless.
+
+**GameMaker's `GmlSpec.xml`** is read from your own runtime install at runtime.
+It is not redistributed and no copy is checked in.
+
+**The demo games** are original code and original art — every sprite is drawn
+from primitives by `tools/*/art.ts`, with no imported asset. They are
+*pastiches*: a platformer in the style of Super Mario Bros. and a shooter in
+the style of Doom. Nintendo and id Software own those properties; this project
+is not affiliated with or endorsed by either.
+
+GameMaker is a trademark of YoYo Games. This is an independent project.
+
+## Licence
+
+[MIT](LICENSE) — use it, fork it, ship it.
