@@ -22,6 +22,7 @@ import {
   checkGml,
   createFolder,
   createObject,
+  createRoom,
   createScript,
   deleteResource,
   eventFileName,
@@ -30,6 +31,7 @@ import {
   ProjectSymbols,
   removeEvent,
   renameResource,
+  roomOrder,
   addRoomInstance,
   createSprite,
   setSpriteProperties,
@@ -372,6 +374,56 @@ export function createServer({ projectRoot }: ServerOptions): McpServer {
         createFolder(current, tx, folder),
       );
       return text(`Created ${path}`);
+    },
+  );
+
+  server.registerTool(
+    'gml_create_room',
+    {
+      description:
+        'Create a room. Optionally turn on a scrolling view that follows an object, and place ' +
+        'the room first in the room order so the game starts there.',
+      inputSchema: {
+        name: z.string(),
+        width: z.number().int().positive().optional(),
+        height: z.number().int().positive().optional(),
+        background: z.string().optional().describe('Background colour, e.g. #5c94fc'),
+        folder: z.string().optional(),
+        persistent: z.boolean().optional(),
+        follow: z.string().optional().describe('Object the view should keep in frame'),
+        viewWidth: z.number().int().positive().optional(),
+        viewHeight: z.number().int().positive().optional(),
+        orderIndex: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('Position in the room order; 0 makes it the starting room'),
+      },
+    },
+    async (args) => {
+      const current = project();
+      const view =
+        args.follow || args.viewWidth || args.viewHeight
+          ? { follow: args.follow, width: args.viewWidth, height: args.viewHeight }
+          : undefined;
+      const ref = current.transact(`create room ${args.name}`, (tx) =>
+        createRoom(current, tx, args.name, {
+          width: args.width,
+          height: args.height,
+          background: args.background,
+          folder: args.folder,
+          persistent: args.persistent,
+          orderIndex: args.orderIndex,
+          view,
+        }),
+      );
+      const order = roomOrder(current);
+      return text(
+        `Created ${ref.path}
+Room order: ${order.join(', ')}
+Starting room: ${order[0] ?? '(none)'}`,
+      );
     },
   );
 

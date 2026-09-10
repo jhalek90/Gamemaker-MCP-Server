@@ -8,3 +8,5 @@ export { ProjectSymbols, checkGml, checkProject, stripCommentsAndStrings, gmlFil
 export type { Diagnostic, SymbolDefinition } from './symbols.js';
 export { createSprite, originPixels, ORIGINS } from './sprites.js';
 export type { CreateSpriteOptions, OriginName } from './sprites.js';
+export { createRoom, addToRoomOrder, roomOrder, setRoomOrder, setRoomProperties, gmColour } from './rooms.js';
+export type { CreateRoomOptions, RoomViewOptions } from './rooms.js';

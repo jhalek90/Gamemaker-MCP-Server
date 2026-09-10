@@ -252,6 +252,26 @@ export class Canvas {
     return this;
   }
 
+  /** Composite another canvas onto this one at `x`, `y`. */
+  blit(source: Canvas, x: number, y: number): this {
+    for (let sy = 0; sy < source.height; sy++) {
+      const ty = y + sy;
+      if (ty < 0 || ty >= this.height) continue;
+      for (let sx = 0; sx < source.width; sx++) {
+        const at = (sy * source.width + sx) * 4;
+        const alpha = source.pixels[at + 3]!;
+        if (alpha === 0) continue;
+        this.blend(
+          x + sx,
+          ty,
+          { r: source.pixels[at]!, g: source.pixels[at + 1]!, b: source.pixels[at + 2]!, a: alpha },
+          1,
+        );
+      }
+    }
+    return this;
+  }
+
   /** Tight bounds of everything at or above `threshold` alpha. */
   alphaBounds(threshold = 1): { left: number; top: number; right: number; bottom: number } {
     let left = this.width;
