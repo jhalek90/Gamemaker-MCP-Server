@@ -309,14 +309,19 @@ wants adjustable, and changing them takes effect immediately. Adjust,
 screenshot, look, adjust again, with no recompile in the loop:
 
 ```gml
-// in your game: read a tunable, falling back to your own default
-if (!variable_global_exists("gmlmcp_tunables")) global.gmlmcp_tunables = {};
-speed_max = global.gmlmcp_tunables[$ "speed_max"] ?? 8;
+// in your game, in the Step event where the value is used
+speed_max = gmlmcp_tunable("speed_max", 8);
 ```
 
 ```
 gml_tunables { set: { speed_max: 12 } }
 ```
+
+`gmlmcp_tunable` is the one bridge function meant to be called from your own
+code. Read it where the value is *used* rather than once in a Create event —
+returning the current value every step is what lets it change while the game
+runs. The first call registers your default, which puts the name in the
+registry, so an agent can ask what is adjustable instead of being told.
 
 Screenshots are deferred to Post Draw, because `screen_save` captures the back
 buffer and an async event would catch a partly drawn frame.

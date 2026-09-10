@@ -205,6 +205,27 @@ function gmlmcp_cmd_speed(_args) {
 	return { speed: _value };
 }
 
+/// @desc Read a live-tunable value, registering its default the first time.
+///
+/// This is the one bridge function meant to be called from your own game code:
+///
+///     move_speed = gmlmcp_tunable("move_speed", 4);
+///
+/// Call it where the value is used, not once in a Create event -- it returns
+/// whatever the value currently is, so reading it every step is what lets an
+/// outside process change it while the game runs.
+///
+/// The first call registers the default, which puts the name in the registry.
+/// That is how an agent discovers what is adjustable without being told.
+function gmlmcp_tunable(_name, _default) {
+	if (!variable_global_exists("gmlmcp_tunables")) global.gmlmcp_tunables = {};
+	var _key = string(_name);
+	if (!variable_struct_exists(global.gmlmcp_tunables, _key)) {
+		global.gmlmcp_tunables[$ _key] = _default;
+	}
+	return global.gmlmcp_tunables[$ _key];
+}
+
 /// @desc Read or write the live tunables registry.
 ///
 /// Game code registers values it wants adjustable at runtime. Changing them
