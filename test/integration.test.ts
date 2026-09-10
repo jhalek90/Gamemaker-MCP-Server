@@ -5,7 +5,7 @@
  * our assumptions by construction. This runs the same operations over a copy
  * of an actual project, which does not.
  *
- *   GML_MCP_SAMPLE_PROJECT=d:/gamedev/gameProjects/ClaudeNNDriving/NN_driving npm test
+ *   GML_MCP_SAMPLE_PROJECT=/path/to/a/GameMakerProject npm test
  */
 
 import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';

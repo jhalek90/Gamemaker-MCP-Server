@@ -12,7 +12,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '../src/mcp/index.js';
 
-const SOURCE = process.argv[2] ?? 'd:/gamedev/gameProjects/ClaudeNNDriving/NN_driving';
+const SOURCE = process.argv[2];
+if (!SOURCE) {
+  console.error('usage: npx tsx tools/live-demo.mts <path to a GameMaker project>');
+  process.exit(1);
+}
 const root = mkdtempSync(join(tmpdir(), 'gml-live-demo-'));
 cpSync(SOURCE, root, { recursive: true });
 console.log(`working on a copy of ${SOURCE}\n  at ${root}\n`);

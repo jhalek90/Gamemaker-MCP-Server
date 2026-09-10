@@ -15,7 +15,11 @@ import { checkProject, ProjectSymbols } from '../src/project/symbols.js';
 import { gmlFiles } from '../src/project/symbols.js';
 import { GmlSpec, requireRuntime } from '../src/spec/index.js';
 
-const ROOT = process.argv[2] ?? 'd:/gamedev/gameProjects';
+const ROOT = process.argv[2];
+if (!ROOT) {
+  console.error('usage: node tools/eval-checker.mjs <folder of GameMaker projects>');
+  process.exit(1);
+}
 const spec = GmlSpec.load(requireRuntime().specPath);
 
 function findProjects(dir, out = [], depth = 0) {

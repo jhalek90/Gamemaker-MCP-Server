@@ -33,7 +33,12 @@ const pairs = new Map();      // "type|prefix" -> count
 const collisionShape = new Map();
 let objects = 0;
 
-for (const file of collect(process.argv[2] ?? 'd:/gamedev')) {
+const root = process.argv[2];
+if (!root) {
+  console.error('usage: node tools/derive-event-types.mjs <folder of GameMaker projects>');
+  process.exit(1);
+}
+for (const file of collect(root)) {
   let doc;
   try { doc = YyDoc.parse(readFileSync(file, 'utf8')); } catch { continue; }
   let events;

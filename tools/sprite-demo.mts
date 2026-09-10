@@ -128,6 +128,10 @@ const game = await runner.run();
 try {
   await game.waitFor(/\[gmlmcp\][^\n]*/, 180000);
   const client = await BridgeClient.connect();
+  // Say which room this demo is about. The project holds several rooms now and
+  // the first one is a different demo entirely, so trusting the room order
+  // photographs the wrong game.
+  await client.request('goto_room', { room: 'Room1' });
   await client.request('wait', { frames: 10 });
   const shot = (await client.request('screenshot', { name: 'sprites.png' })) as {
     file: string;

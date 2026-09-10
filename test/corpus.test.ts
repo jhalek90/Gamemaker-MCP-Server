@@ -6,7 +6,7 @@
  * releases, so correctness is defined by "matches what GameMaker actually
  * wrote", not by a spec. Point GML_MCP_CORPUS at a directory of real projects.
  *
- *   GML_MCP_CORPUS=d:/gamedev npm test
+ *   GML_MCP_CORPUS=/path/to/gamemaker/projects npm test
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
